@@ -1,0 +1,78 @@
+{
+  "$schema": "../../spec/v1/schemas/environment-binding.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "EnvironmentBinding",
+  "metadata": {
+    "projectId": "sample-system",
+    "environment": "production",
+    "hostId": "WIN-OPS-01",
+    "revision": 1
+  },
+  "roots": {
+    "install": "C:\\CompanyOps\\Apps\\sample-system",
+    "data": "C:\\CompanyOps\\Data\\sample-system",
+    "logs": "C:\\CompanyOps\\Logs\\sample-system"
+  },
+  "componentBindings": [
+    {
+      "componentId": "api",
+      "serviceAccountRef": "sample-system-runtime",
+      "nativeName": "Company.SampleSystem.Api"
+    },
+    {
+      "componentId": "web",
+      "serviceAccountRef": "sample-system-web",
+      "nativeName": "Company.SampleSystem.Web"
+    },
+    {
+      "componentId": "cleanup",
+      "serviceAccountRef": "sample-system-runtime",
+      "nativeName": "\\CompanyOps\\SampleSystem\\Cleanup"
+    },
+    {
+      "componentId": "legacy-worker",
+      "serviceAccountRef": "pm2-legacy-owner",
+      "nativeName": "sample-system-legacy-worker"
+    }
+  ],
+  "portBindings": [
+    {
+      "portId": "api-http",
+      "componentId": "api",
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "port": 19201
+    },
+    {
+      "portId": "web-http",
+      "componentId": "web",
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "port": 8080
+    }
+  ],
+  "settings": [
+    {
+      "key": "DATABASE_URL",
+      "secretRef": "windows-credential/sample-system/database-url"
+    },
+    {
+      "key": "LOG_LEVEL",
+      "value": "Information"
+    }
+  ],
+  "legacyPm2": {
+    "ownerSid": "S-1-5-21-1000000000-2000000000-3000000000-1001",
+    "snapshotFileName": "sample-system.pm2.json",
+    "controlPipeName": "CompanyOps.Pm2Bridge.SampleOwner.v1",
+    "maxAgeSeconds": 30
+  },
+  "routes": [
+    {
+      "componentId": "web",
+      "host": "sample.internal.example",
+      "scheme": "https",
+      "portRef": "web-http"
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ops.company/schemas/v1/environment-binding.schema.json",
+  "title": "Ops Environment Binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "apiVersion",
+    "manifestKind",
+    "metadata",
+    "roots",
+    "componentBindings",
+    "portBindings",
+    "settings"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "apiVersion": {
+      "const": "ops.company/v1"
+    },
+    "manifestKind": {
+      "const": "EnvironmentBinding"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "environment",
+        "hostId",
+        "revision"
+      ],
+      "properties": {
+        "projectId": {
+          "$ref": "#/definitions/id"
+        },
+        "environment": {
+          "$ref": "#/definitions/id"
+        },
+        "hostId": {
+          "$ref": "#/definitions/hostId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "install",
+        "data",
+        "logs"
+      ],
+      "properties": {
+        "install": {
+          "$ref": "#/definitions/absoluteWindowsPath"
+        },
+        "data": {
+          "$ref": "#/definitions/absoluteWindowsPath"
+        },
+        "logs": {
+          "$ref": "#/definitions/absoluteWindowsPath"
+        }
+      }
+    },
+    "componentBindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "componentId",
+          "serviceAccountRef",
+          "nativeName"
+        ],
+        "properties": {
+          "componentId": {
+            "$ref": "#/definitions/id"
+          },
+          "serviceAccountRef": {
+            "$ref": "#/definitions/id"
+          },
+          "nativeName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "portBindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "portId",
+          "componentId",
+          "protocol",
+          "address",
+          "port"
+        ],
+        "properties": {
+          "portId": {
+            "$ref": "#/definitions/id"
+          },
+          "componentId": {
+            "$ref": "#/definitions/id"
+          },
+          "protocol": {
+            "enum": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "address": {
+            "type": "string",
+            "enum": [
+              "127.0.0.1",
+              "0.0.0.0",
+              "::1",
+              "::"
+            ]
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "maxLength": 100
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "integer",
+              "boolean"
+            ]
+          },
+          "secretRef": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,199}$"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "value"
+            ],
+            "not": {
+              "required": [
+                "secretRef"
+              ]
+            }
+          },
+          {
+            "required": [
+              "secretRef"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "legacyPm2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownerSid",
+        "snapshotFileName",
+        "controlPipeName"
+      ],
+      "properties": {
+        "ownerSid": {
+          "type": "string",
+          "pattern": "^S-1-(?:[0-9]+-)+[0-9]+$",
+          "maxLength": 184
+        },
+        "snapshotFileName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}\\.json$"
+        },
+        "controlPipeName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$"
+        },
+        "maxAgeSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 30
+        }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "componentId",
+          "host",
+          "scheme"
+        ],
+        "properties": {
+          "componentId": {
+            "$ref": "#/definitions/id"
+          },
+          "host": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9.-]+$",
+            "maxLength": 253
+          },
+          "scheme": {
+            "enum": [
+              "http",
+              "https"
+            ]
+          },
+          "portRef": {
+            "$ref": "#/definitions/id"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 63
+    },
+    "hostId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"
+    },
+    "absoluteWindowsPath": {
+      "type": "string",
+      "pattern": "^[A-Za-z]:\\\\(?:[^<>:\"/\\\\|?*]+\\\\?)*$",
+      "minLength": 3,
+      "maxLength": 240
+    }
+  }
+}

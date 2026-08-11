@@ -1,0 +1,664 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ops.company/schemas/v1/project-manifest.schema.json",
+  "title": "Ops Project Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "apiVersion",
+    "manifestKind",
+    "metadata",
+    "components",
+    "update"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "apiVersion": {
+      "const": "ops.company/v1"
+    },
+    "manifestKind": {
+      "const": "ProjectManifest"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "owners"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "owners": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/component"
+      }
+    },
+    "ports": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/portRequest"
+      }
+    },
+    "configuration": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/configurationRequest"
+      }
+    },
+    "dataDirectories": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/dataDirectory"
+      }
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "rollbackOnFailure",
+        "healthTimeoutSeconds"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "stopStart"
+          ]
+        },
+        "rollbackOnFailure": {
+          "type": "boolean"
+        },
+        "healthTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 600
+        },
+        "retainReleaseCount": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10,
+          "default": 2
+        }
+      }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 63
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260,
+      "pattern": "^(?![A-Za-z]:)(?!\\\\\\\\)(?!/)(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "healthProbe": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "portRef",
+            "path",
+            "timeoutSeconds"
+          ],
+          "properties": {
+            "kind": {
+              "const": "http"
+            },
+            "portRef": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/",
+              "maxLength": 200
+            },
+            "expectedStatus": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599,
+              "default": 200
+            },
+            "expectJson": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "timeoutSeconds": {
+              "type": "number",
+              "minimum": 0.2,
+              "maximum": 10
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "portRef",
+            "timeoutSeconds"
+          ],
+          "properties": {
+            "kind": {
+              "const": "tcp"
+            },
+            "portRef": {
+              "$ref": "#/definitions/id"
+            },
+            "timeoutSeconds": {
+              "type": "number",
+              "minimum": 0.2,
+              "maximum": 10
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "maxAgeSeconds"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fileHeartbeat"
+            },
+            "path": {
+              "$ref": "#/definitions/relativePath"
+            },
+            "maxAgeSeconds": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 3600
+            }
+          }
+        }
+      ]
+    },
+    "componentBase": {
+      "type": "object",
+      "required": [
+        "id",
+        "displayName",
+        "kind",
+        "entrypoint"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "kind": {
+          "enum": [
+            "windowsService",
+            "iisSite",
+            "staticSite",
+            "scheduledTask",
+            "pm2Legacy"
+          ]
+        },
+        "entrypoint": {
+          "$ref": "#/definitions/id"
+        },
+        "dependsOn": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "health": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/healthProbe"
+          }
+        }
+      }
+    },
+    "component": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "service"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "windowsService"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "service": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "startMode"
+                  ],
+                  "properties": {
+                    "startMode": {
+                      "enum": [
+                        "automatic",
+                        "delayed",
+                        "manual"
+                      ]
+                    },
+                    "failureRestartLimit": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 10,
+                      "default": 3
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "site"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "iisSite"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "site": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "managedRuntime",
+                    "pipelineMode"
+                  ],
+                  "properties": {
+                    "managedRuntime": {
+                      "enum": [
+                        "none",
+                        "v4.0"
+                      ]
+                    },
+                    "pipelineMode": {
+                      "enum": [
+                        "Integrated",
+                        "Classic"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "site"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "staticSite"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "site": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "defaultDocument"
+                  ],
+                  "properties": {
+                    "defaultDocument": {
+                      "$ref": "#/definitions/relativePath"
+                    },
+                    "spaFallback": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "task"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "scheduledTask"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "task": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "trigger"
+                  ],
+                  "properties": {
+                    "trigger": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "atStartup"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind",
+                            "everyMinutes"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "interval"
+                            },
+                            "everyMinutes": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 10080
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "kind",
+                            "time"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "daily"
+                            },
+                            "time": {
+                              "type": "string",
+                              "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "executionTimeLimitSeconds": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 86400
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pm2"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "pm2Legacy"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "pm2": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "cwd",
+                    "script"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "cwd": {
+                      "$ref": "#/definitions/relativePath"
+                    },
+                    "script": {
+                      "$ref": "#/definitions/relativePath"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "portRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "componentId",
+        "protocol",
+        "allocation",
+        "exposure"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "componentId": {
+          "$ref": "#/definitions/id"
+        },
+        "protocol": {
+          "enum": [
+            "tcp",
+            "udp"
+          ]
+        },
+        "allocation": {
+          "enum": [
+            "dynamic",
+            "fixed"
+          ]
+        },
+        "preferredPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "exposure": {
+          "enum": [
+            "loopback",
+            "lan"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "allocation": {
+                "const": "fixed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "preferredPort"
+            ]
+          }
+        }
+      ]
+    },
+    "configurationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "type",
+        "required"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "maxLength": 100
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "boolean",
+            "url",
+            "path",
+            "secret"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    },
+    "dataDirectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "componentId",
+        "purpose",
+        "backupTier"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "componentId": {
+          "$ref": "#/definitions/id"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "backupTier": {
+          "enum": [
+            "none",
+            "standard",
+            "critical"
+          ]
+        }
+      }
+    }
+  }
+}

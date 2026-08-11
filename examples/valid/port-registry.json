@@ -1,0 +1,36 @@
+{
+  "$schema": "../../spec/v1/schemas/port-registry.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "PortRegistry",
+  "metadata": {
+    "hostId": "WIN-OPS-01",
+    "generation": 8,
+    "updatedAt": "2026-08-11T08:05:00Z"
+  },
+  "reservations": [
+    {
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "port": 19201,
+      "projectId": "sample-system",
+      "environment": "production",
+      "componentId": "api",
+      "portId": "api-http",
+      "state": "active",
+      "operationId": "op-20260811-0001",
+      "reservedAt": "2026-08-11T08:00:30Z"
+    },
+    {
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "port": 8080,
+      "projectId": "sample-system",
+      "environment": "production",
+      "componentId": "web",
+      "portId": "web-http",
+      "state": "active",
+      "operationId": "op-20260811-0001",
+      "reservedAt": "2026-08-11T08:00:30Z"
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ops.company/schemas/v1/port-registry.schema.json",
+  "title": "Ops Port Registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "apiVersion",
+    "manifestKind",
+    "metadata",
+    "reservations"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "apiVersion": {
+      "const": "ops.company/v1"
+    },
+    "manifestKind": {
+      "const": "PortRegistry"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "generation",
+        "updatedAt"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/definitions/hostId"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "reservations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol",
+          "address",
+          "port",
+          "projectId",
+          "environment",
+          "componentId",
+          "portId",
+          "state",
+          "operationId"
+        ],
+        "properties": {
+          "protocol": {
+            "enum": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "address": {
+            "type": "string",
+            "enum": [
+              "127.0.0.1",
+              "0.0.0.0",
+              "::1",
+              "::"
+            ]
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "projectId": {
+            "$ref": "#/definitions/id"
+          },
+          "environment": {
+            "$ref": "#/definitions/id"
+          },
+          "componentId": {
+            "$ref": "#/definitions/id"
+          },
+          "portId": {
+            "$ref": "#/definitions/id"
+          },
+          "state": {
+            "enum": [
+              "reserved",
+              "active",
+              "releasing"
+            ]
+          },
+          "operationId": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"
+          },
+          "reservedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 63
+    },
+    "hostId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"
+    }
+  }
+}

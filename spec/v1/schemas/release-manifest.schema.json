@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ops.company/schemas/v1/release-manifest.schema.json",
+  "title": "Ops Release Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "apiVersion",
+    "manifestKind",
+    "metadata",
+    "target",
+    "projectManifestSha256",
+    "artifacts",
+    "componentPayloads"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "apiVersion": {
+      "const": "ops.company/v1"
+    },
+    "manifestKind": {
+      "const": "ReleaseManifest"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "version",
+        "releaseId",
+        "builtAt"
+      ],
+      "properties": {
+        "projectId": {
+          "$ref": "#/definitions/id"
+        },
+        "version": {
+          "$ref": "#/definitions/version"
+        },
+        "releaseId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"
+        },
+        "builtAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sourceRevision": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{7,64}$"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "minAgentVersion"
+      ],
+      "properties": {
+        "os": {
+          "const": "windows"
+        },
+        "architecture": {
+          "enum": [
+            "x64",
+            "arm64"
+          ]
+        },
+        "minAgentVersion": {
+          "$ref": "#/definitions/version"
+        }
+      }
+    },
+    "projectManifestSha256": {
+      "$ref": "#/definitions/sha256"
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "fileName",
+          "mediaType",
+          "sha256",
+          "sizeBytes"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/definitions/id"
+          },
+          "fileName": {
+            "$ref": "#/definitions/fileName"
+          },
+          "mediaType": {
+            "enum": [
+              "application/zip"
+            ]
+          },
+          "sha256": {
+            "$ref": "#/definitions/sha256"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "componentPayloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "componentId",
+          "entrypoint",
+          "artifactId",
+          "path"
+        ],
+        "properties": {
+          "componentId": {
+            "$ref": "#/definitions/id"
+          },
+          "entrypoint": {
+            "$ref": "#/definitions/id"
+          },
+          "artifactId": {
+            "$ref": "#/definitions/id"
+          },
+          "path": {
+            "$ref": "#/definitions/relativePath"
+          },
+          "workingDirectory": {
+            "$ref": "#/definitions/relativePath"
+          },
+          "arguments": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 63
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
+      "maxLength": 100
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "fileName": {
+      "type": "string",
+      "pattern": "^[^\\\\/:*?\"<>|]+$",
+      "minLength": 1,
+      "maxLength": 180
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260,
+      "pattern": "^(?![A-Za-z]:)(?!\\\\\\\\)(?!/)(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+bin/
+obj/
+.vs/
+.idea/
+.vscode/
+TestResults/
+artifacts/
+output/
+.playwright-cli/
+node_modules/
+*.user
+*.suo
+*.log
+*.tmp
+*.bak
+
+# 运行时状态和敏感配置永不进入规范仓库
+.env
+.env.*
+secrets/
+runtime-state/
+*.db
+*.db-shm
+*.db-wal

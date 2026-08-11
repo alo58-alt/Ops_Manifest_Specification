@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>CompanyOps.Console</RootNamespace>
+    <AssemblyName>CompanyOps.Console</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ops.Contracts\Ops.Contracts.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+  </ItemGroup>
+</Project>

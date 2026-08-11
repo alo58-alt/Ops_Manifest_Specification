@@ -1,0 +1,143 @@
+{
+  "$schema": "../../spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "sample-system",
+    "displayName": "示例业务系统",
+    "description": "演示 Windows Service、静态站点、任务计划和遗留 PM2 的统一声明。",
+    "owners": [
+      "platform-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "api",
+      "displayName": "业务 API",
+      "kind": "windowsService",
+      "entrypoint": "api-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "api-http",
+          "path": "/health",
+          "expectedStatus": 200,
+          "expectJson": {
+            "status": "ok"
+          },
+          "timeoutSeconds": 2
+        }
+      ],
+      "service": {
+        "startMode": "delayed",
+        "failureRestartLimit": 3
+      }
+    },
+    {
+      "id": "web",
+      "displayName": "管理端",
+      "kind": "staticSite",
+      "entrypoint": "web-dist",
+      "dependsOn": [
+        "api"
+      ],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "web-http",
+          "path": "/",
+          "expectedStatus": 200,
+          "timeoutSeconds": 2
+        }
+      ],
+      "site": {
+        "defaultDocument": "index.html",
+        "spaFallback": true
+      }
+    },
+    {
+      "id": "cleanup",
+      "displayName": "数据清理任务",
+      "kind": "scheduledTask",
+      "entrypoint": "cleanup-main",
+      "dependsOn": [
+        "api"
+      ],
+      "health": [],
+      "task": {
+        "trigger": {
+          "kind": "daily",
+          "time": "02:30"
+        },
+        "executionTimeLimitSeconds": 1800
+      }
+    },
+    {
+      "id": "legacy-worker",
+      "displayName": "遗留 PM2 Worker",
+      "kind": "pm2Legacy",
+      "entrypoint": "legacy-worker-main",
+      "dependsOn": [
+        "api"
+      ],
+      "health": [
+        {
+          "kind": "fileHeartbeat",
+          "path": "runtime/legacy-worker.heartbeat.json",
+          "maxAgeSeconds": 30
+        }
+      ],
+      "pm2": {
+        "name": "sample-system-legacy-worker",
+        "cwd": "legacy",
+        "script": "legacy/worker.py"
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "api-http",
+      "componentId": "api",
+      "protocol": "tcp",
+      "allocation": "dynamic",
+      "preferredPort": 9201,
+      "exposure": "loopback"
+    },
+    {
+      "id": "web-http",
+      "componentId": "web",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 8080,
+      "exposure": "lan"
+    }
+  ],
+  "configuration": [
+    {
+      "key": "DATABASE_URL",
+      "type": "secret",
+      "required": true,
+      "description": "数据库连接 Secret 引用"
+    },
+    {
+      "key": "LOG_LEVEL",
+      "type": "string",
+      "required": false
+    }
+  ],
+  "dataDirectories": [
+    {
+      "id": "business-data",
+      "componentId": "api",
+      "purpose": "数据库、上传文件和业务运行数据",
+      "backupTier": "critical"
+    }
+  ],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

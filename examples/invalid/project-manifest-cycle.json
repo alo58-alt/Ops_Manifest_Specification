@@ -1,0 +1,48 @@
+{
+  "$schema": "../../spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "cyclic-system",
+    "displayName": "循环依赖示例",
+    "owners": [
+      "platform-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "api",
+      "displayName": "API",
+      "kind": "windowsService",
+      "entrypoint": "api-main",
+      "dependsOn": [
+        "worker"
+      ],
+      "health": [],
+      "service": {
+        "startMode": "automatic"
+      }
+    },
+    {
+      "id": "worker",
+      "displayName": "Worker",
+      "kind": "windowsService",
+      "entrypoint": "worker-main",
+      "dependsOn": [
+        "api"
+      ],
+      "health": [],
+      "service": {
+        "startMode": "automatic"
+      }
+    }
+  ],
+  "ports": [],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 30
+  }
+}
