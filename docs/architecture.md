@@ -4,7 +4,7 @@
 
 每台 Windows 主机部署一个高权限 Ops Agent，所有项目共用一个统一 Ops Console。独立项目不运行自己的运维管理器，也不允许业务进程主动向主机注册高权限资源。
 
-项目仓库提交 `ProjectManifest`；CI 生成带哈希的 `ReleaseManifest`；部署者或 Console 提交发布请求；Agent 校验发布包并生成主机专属 `EnvironmentBinding` 和 `InstalledState`。
+项目仓库提交 `ProjectManifest`；CI 生成带哈希的 `ReleaseManifest`；授权运维者为具体主机维护 `EnvironmentBinding`；部署者或 Console 提交发布请求；Agent 校验发布包并生成 `InstalledState`。当前 MVP 不自动生成 EnvironmentBinding。
 
 ```mermaid
 flowchart LR
@@ -27,6 +27,7 @@ flowchart LR
 - Agent 以 Windows Service 运行，通过受 ACL 保护的 Named Pipe 接收结构化请求。
 - Agent 只实现白名单资源适配器，不接受任意 PowerShell、CMD 或可执行文件命令。
 - ProjectManifest 只表达需求；主机资源的最终值只能来自 EnvironmentBinding。
+- EnvironmentBinding 的安装目录必须是 Agent 配置中受审父目录的严格子目录；未配置白名单、指向盘符根目录或跨项目复用目录时失败关闭。
 - ReleaseManifest 的制品必须按 SHA-256 验证，版本安装采用临时目录、预检、原子切换和失败回滚。
 - Secret 只以引用形式出现，实际值由未来的 Secret Provider 在执行时解析，永不写入日志或 InstalledState。
 

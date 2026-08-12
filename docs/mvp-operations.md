@@ -13,18 +13,18 @@ Console 服务账号 SID 必须加入 Agent 的 `Ops:AllowedClientSids`。Networ
 
 ## 2. 配置目录
 
-建议固定布局：
+程序目录和数据目录由安装者选择，并通过 `-InstallRoot`、`-DataRoot` 显式传给安装器。建议固定结构而不是固定盘符：
 
 ```text
-C:\Program Files\CompanyOps\Agent\
-C:\Program Files\CompanyOps\Console\
-C:\Program Files\CompanyOps\Pm2Bridge\
-C:\ProgramData\CompanyOps\manifests\
-C:\ProgramData\CompanyOps\Agent\ops-agent.db
-C:\ProgramData\CompanyOps\Agent\pm2-snapshots\
-C:\CompanyOps\Apps\<project>\releases\<version>\
-C:\CompanyOps\Data\<project>\
-C:\CompanyOps\Logs\<project>\
+<InstallRoot>\Agent\
+<InstallRoot>\Console\
+<InstallRoot>\Pm2Bridge\
+<DataRoot>\manifests\
+<DataRoot>\Agent\ops-agent.db
+<DataRoot>\Agent\pm2-snapshots\
+<项目安装根目录>\releases\<version>\
+<项目数据根目录>\
+<项目日志根目录>\
 ```
 
 Agent 生产配置至少明确：
@@ -33,18 +33,19 @@ Agent 生产配置至少明确：
 {
   "Ops": {
     "HostId": "WIN-OPS-01",
-    "ManifestDirectory": "C:\\ProgramData\\CompanyOps\\manifests",
-    "StateDirectory": "C:\\ProgramData\\CompanyOps\\Agent",
-    "Pm2SnapshotDirectory": "C:\\ProgramData\\CompanyOps\\Agent\\pm2-snapshots",
+    "ManifestDirectory": "<DataRoot>\\manifests",
+    "StateDirectory": "<DataRoot>\\Agent",
+    "Pm2SnapshotDirectory": "<DataRoot>\\Agent\\pm2-snapshots",
     "PipeName": "CompanyOps.Agent.v1",
     "InventoryIntervalSeconds": 30,
     "EnableMutations": false,
+    "AllowedProjectInstallRoots": ["<ApprovedProjectParentRoot>"],
     "AllowedClientSids": ["S-1-5-20"]
   }
 }
 ```
 
-首次上线保持 `EnableMutations=false`，完成只读盘点、归属解释和冲突修正后，再针对试点主机单独变更。
+首次上线保持 `EnableMutations=false`，完成只读盘点、归属解释和冲突修正后，再针对试点主机单独变更。`AllowedProjectInstallRoots` 是主机管理员批准的项目父目录；每个 `EnvironmentBinding.roots.install` 必须是其中某一项的子目录，不能直接等于共享父目录或盘符根目录。未配置时 `Plan` 和所有部署写入失败关闭。
 
 发布与首次安装脚本默认都不触碰现有业务服务：
 
@@ -52,12 +53,17 @@ Agent 生产配置至少明确：
 # 只生成 artifacts\publish
 pwsh -NoProfile -File .\tools\Publish-OpsPlatform.ps1
 
-# 只显示安装计划
-pwsh -NoProfile -File .\tools\Install-OpsPlatform.ps1
+$InstallRoot = (Read-Host '请输入 CompanyOps 程序目录绝对路径').Trim()
+$DataRoot = (Read-Host '请输入 CompanyOps 数据目录绝对路径').Trim()
+
+# 只显示安装计划；显式传入用户选择的目录
+& .\tools\Install-OpsPlatform.ps1 -InstallRoot $InstallRoot -DataRoot $DataRoot
 
 # 在提升的 PowerShell 中显式首次安装；仍不启动，mutations=false
-pwsh -NoProfile -File .\tools\Install-OpsPlatform.ps1 -Apply -Confirm
+& .\tools\Install-OpsPlatform.ps1 -InstallRoot $InstallRoot -DataRoot $DataRoot -Apply -Confirm
 ```
+
+完整的路径校验、预览和首次安装步骤见[傻瓜式完整操作手册](complete-operations-manual.md)第 5 章。
 
 首次安装脚本发现同名服务或已有安装目录会拒绝覆盖。它不是升级器；平台自身升级必须采用后续签名、版本化安装流程。
 
@@ -110,14 +116,15 @@ companyops deploy --data-file .\deployment.json
 
 ## 5. 发布与回滚语义
 
-- `Plan` 校验 ReleaseManifest、项目和 generation，不修改系统；
+- `Plan` 校验 ReleaseManifest、目标架构、最低 Agent 版本、ProjectManifest SHA-256、项目 generation 和发布激活能力，不修改系统；
 - `Install/Update` 先原子预留端口，再解包到 `.staging/<operationId>`；
 - ZIP 每个目标必须位于 staging 内，禁止覆盖已有 release；
-- 成功后移动为 `releases/<version>`，提交 pointer、InstalledState 和端口；
+- Windows Service 发布先对全部服务做精确预检，再按反向依赖停止、切换 SCM `ImagePath`、按依赖启动并复核声明式健康；
+- 原生入口与健康全部通过后，才提交 pointer、InstalledState 和端口；状态提交失败时恢复旧入口、原运行状态和旧状态文件；
 - 失败 release 移入 `.failed/<operationId>`，便于取证，不覆盖旧版本；
-- `Rollback` 只接受 pointer 记录且仍位于本项目 `releases` 根下的上一版本。
+- `Rollback` 只接受 pointer 记录、仍位于本项目 `releases` 根下且内嵌 ReleaseManifest/ProjectManifest 哈希可信的上一版本。
 
-当前 activation 确认不可变 release 已就绪；SCM/IIS/Task Scheduler 的运行控制仍走独立白名单适配器和健康门禁。数据库变更必须另行设计备份/兼容性策略。
+当前只有已存在 Windows Service 具备发布激活代码闭环；不自动创建服务。IIS、静态站点、Task Scheduler 和 PM2 发布会在 `Plan` 阶段失败关闭，其既有资源启停仍走独立白名单适配器。数据库变更必须另行设计备份/兼容性策略。
 
 ## 6. 现场验收清单
 
@@ -129,6 +136,7 @@ companyops deploy --data-file .\deployment.json
 - [ ] 试点组件精确 start/stop/restart，不影响其他项目；
 - [ ] 依赖或健康失败时后续步骤停止；
 - [ ] 更新失败保留旧 pointer，失败 release 被隔离；
+- [ ] Windows Service `ImagePath` 写入后回读一致，失败时旧入口和原运行状态恢复；
 - [ ] Rollback 后健康重新通过；
 - [ ] 审计包含同一 operationId、动作和结果；
 - [ ] 业务负责人完成真实 UAT。

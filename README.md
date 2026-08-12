@@ -6,10 +6,10 @@
 
 - 五类 v1 契约：`ProjectManifest`、`ReleaseManifest`、`EnvironmentBinding`、`InstalledState`、`PortRegistry`；
 - .NET 10 Windows Agent：SCM、IIS、Task Scheduler、监听端口和遗留 PM2 只读盘点；
-- 项目/环境/组件聚合：声明、绑定、InstalledState 和主机资源精确关联；
+- 项目/环境/组件聚合：声明、绑定、InstalledState 和主机资源精确关联，跨项目原生资源重复声明失败关闭；
 - 安全控制：generation 乐观锁、幂等键、资源门禁、依赖拓扑、HTTP/TCP/文件心跳健康门禁和完整审计；
 - 白名单适配器：Windows SCM、IIS site、Task Scheduler、PM2 owner bridge；
-- 发布事务：制品大小/SHA-256、ZIP 路径逃逸和符号链接防护、端口批量事务、不可变 release、原子 pointer、InstalledState、失败隔离和回滚；
+- 发布事务：目标架构/Agent 版本/ProjectManifest 哈希、制品大小/SHA-256、ZIP 路径防护、端口事务、不可变 release；已存在 Windows Service 支持真实 `ImagePath` 切换、依赖启动、健康复核和失败恢复；
 - ASP.NET Core + Vue 3 Console：仅监听 loopback，Windows Negotiate，reader/operator/admin，防 CSRF、安全响应头和高风险确认；
 - 诊断 CLI：查询与结构化 `operate` / `deploy` 请求。
 
@@ -32,8 +32,7 @@ flowchart LR
 ## 开发验证
 
 ```powershell
-cd C:\Users\zheng\PycharmProjects\Ops_Manifest_Specification
-
+# 先在 PowerShell 中进入本仓库根目录，再执行：
 dotnet restore .\OpsManifest.slnx --configfile .\NuGet.config
 dotnet build .\OpsManifest.slnx -c Release --no-restore
 dotnet test .\OpsManifest.slnx -c Release --no-build --no-restore
@@ -47,8 +46,11 @@ npm run build
 校验项目声明：
 
 ```powershell
-pwsh -NoProfile -File .\tools\Test-OpsManifest.ps1 C:\path\to\ops.project.json
-pwsh -NoProfile -File .\tools\Test-OpsManifest.ps1 C:\path\to\manifests -Recurse
+$ManifestPath = (Read-Host '请输入 Manifest 文件绝对路径').Trim()
+pwsh -NoProfile -File .\tools\Test-OpsManifest.ps1 $ManifestPath
+
+$ManifestDirectory = (Read-Host '请输入 Manifest 目录绝对路径').Trim()
+pwsh -NoProfile -File .\tools\Test-OpsManifest.ps1 $ManifestDirectory -Recurse
 ```
 
 生成可部署但尚未安装的发布目录：
@@ -59,6 +61,7 @@ pwsh -NoProfile -File .\tools\Publish-OpsPlatform.ps1
 
 ## 使用入口
 
+- [傻瓜式完整操作手册（从构建、安装到项目接入）](docs/complete-operations-manual.md)
 - [v1 运维声明规范](docs/specification-v1.md)
 - [系统架构与信任边界](docs/architecture.md)
 - [MVP 运维手册](docs/mvp-operations.md)

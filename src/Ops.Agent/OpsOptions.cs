@@ -20,7 +20,48 @@ public sealed class OpsOptions
 
     public bool EnableMutations { get; set; }
 
+    public string[] AllowedProjectInstallRoots { get; set; } = [];
+
     public string[] AllowedClientSids { get; set; } = [];
+
+    public static bool HasSafeAllowedProjectInstallRoots(OpsOptions options)
+    {
+        if (!options.EnableMutations)
+        {
+            return true;
+        }
+
+        if (options.AllowedProjectInstallRoots is not { Length: > 0 })
+        {
+            return false;
+        }
+
+        try
+        {
+            return options.AllowedProjectInstallRoots.All(path =>
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    return false;
+                }
+
+                var expanded = Environment.ExpandEnvironmentVariables(path.Trim());
+                var fullPath = Path.GetFullPath(expanded);
+                var pathRoot = Path.GetPathRoot(fullPath);
+                return Path.IsPathFullyQualified(fullPath) &&
+                       pathRoot is not null &&
+                       !string.Equals(
+                           Path.TrimEndingDirectorySeparator(fullPath),
+                           Path.TrimEndingDirectorySeparator(pathRoot),
+                           StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 }
 
 public sealed record ResolvedOpsPaths(

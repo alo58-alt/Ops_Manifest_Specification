@@ -44,6 +44,8 @@ ProjectManifest 包含：
 
 ReleaseManifest 由构建过程生成，不由现场人工编辑。每个制品至少包含文件名、字节数和 64 位小写 SHA-256。组件载荷只能引用已声明的制品，并给出制品内部相对路径；禁止盘符、UNC 和父目录跳转。
 
+`projectManifestSha256` 必须是本次构建所使用 ProjectManifest 原始文件字节的 SHA-256；Agent 会在 `Plan` 阶段与当前唯一声明精确比对。当前 Windows Service 激活器只解析启动参数中的 `${PORT_<PORT_ID>}`，其中连字符转换为下划线，例如 `api-http` 对应 `${PORT_API_HTTP}`；未知、Secret 或未绑定占位符失败关闭。Windows Service 的 `workingDirectory` 如存在，只能等于入口文件所在目录，且服务本身仍应以 `AppContext.BaseDirectory` 等可靠基准解析资源。
+
 同一项目版本一旦发布，其 ReleaseManifest 和制品必须不可变。需要修复时发布新版本，不能替换旧版本同名 ZIP。
 
 ## 5. EnvironmentBinding

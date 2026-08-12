@@ -47,6 +47,74 @@ public sealed class ProjectRegistryTests
         Assert.Contains(project.Problems, static problem => problem.Contains("nativeId", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task TwoProjectsClaimingSameNativeService_BothFailClosedAsConflict()
+    {
+        using var directory = new TestDirectory();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var entries = new List<ManifestCatalogEntry>();
+        foreach (var projectId in new[] { "sample-a", "sample-b" })
+        {
+            var projectPath = Path.Combine(directory.FullPath, $"{projectId}.project.json");
+            await File.WriteAllTextAsync(
+                projectPath,
+                $$"""
+                {
+                  "manifestKind": "ProjectManifest",
+                  "metadata": { "id": "{{projectId}}", "displayName": "{{projectId}}" },
+                  "components": [
+                    { "id": "api", "displayName": "API", "kind": "windowsService" }
+                  ]
+                }
+                """,
+                cancellationToken);
+            entries.Add(new ManifestCatalogEntry(
+                projectPath,
+                "ProjectManifest",
+                projectId,
+                true,
+                DateTimeOffset.UtcNow,
+                []));
+            var bindingPath = Path.Combine(directory.FullPath, $"{projectId}.binding.json");
+            await File.WriteAllTextAsync(
+                bindingPath,
+                $$"""
+                {
+                  "manifestKind": "EnvironmentBinding",
+                  "metadata": {
+                    "projectId": "{{projectId}}", "environment": "test", "hostId": "TEST-HOST"
+                  },
+                  "roots": { "install": "C:\\CompanyOps\\Apps\\shared" },
+                  "componentBindings": [
+                    { "componentId": "api", "nativeName": "Company.Shared.Api" }
+                  ]
+                }
+                """,
+                cancellationToken);
+            entries.Add(new ManifestCatalogEntry(
+                bindingPath,
+                "EnvironmentBinding",
+                projectId,
+                true,
+                DateTimeOffset.UtcNow,
+                []));
+        }
+
+        var snapshot = await CreateRegistry(directory.FullPath).BuildAsync(
+            new ManifestCatalogSnapshot(DateTimeOffset.UtcNow, entries),
+            new InventorySnapshot("TEST-HOST", DateTimeOffset.UtcNow, []),
+            cancellationToken);
+
+        Assert.Equal(2, snapshot.Projects.Count);
+        Assert.All(snapshot.Projects, static project =>
+        {
+            Assert.Equal(ProjectBindingStatus.Conflict, project.Status);
+            Assert.Equal(ComponentOwnershipStatus.Conflict, Assert.Single(project.Components).Ownership);
+            Assert.Contains(project.Problems, static problem => problem.Contains("多个项目", StringComparison.Ordinal));
+            Assert.Contains(project.Problems, static problem => problem.Contains("安装根目录", StringComparison.Ordinal));
+        });
+    }
+
     private static ProjectRegistry CreateRegistry(string path) =>
         new(new OpsPathResolver(
             Options.Create(new OpsOptions

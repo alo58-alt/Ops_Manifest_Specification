@@ -36,16 +36,24 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.ToArray(), StringComparer.Ordinal);
 
+        var bindingGroups = documents
+            .Where(static item => item.Entry.ManifestKind == "EnvironmentBinding")
+            .Where(item => Equals(String(item.Root, "metadata", "hostId"), hostId))
+            .GroupBy(
+                static item => Key(
+                    String(item.Root, "metadata", "projectId"),
+                    String(item.Root, "metadata", "environment")),
+                StringComparer.Ordinal)
+            .OrderBy(static group => group.Key, StringComparer.Ordinal)
+            .ToArray();
+        var installRoots = bindingGroups
+            .Where(static group => group.Count() == 1)
+            .ToDictionary(
+                static group => group.Key,
+                static group => String(group.Single().Root, "roots", "install"),
+                StringComparer.Ordinal);
         var projects = new List<ProjectRuntimeView>();
-        foreach (var bindingGroup in documents
-                     .Where(static item => item.Entry.ManifestKind == "EnvironmentBinding")
-                     .Where(item => Equals(String(item.Root, "metadata", "hostId"), hostId))
-                     .GroupBy(
-                         static item => Key(
-                             String(item.Root, "metadata", "projectId"),
-                             String(item.Root, "metadata", "environment")),
-                         StringComparer.Ordinal)
-                     .OrderBy(static group => group.Key, StringComparer.Ordinal))
+        foreach (var bindingGroup in bindingGroups)
         {
             var binding = bindingGroup.First().Root;
             var projectId = String(binding, "metadata", "projectId") ?? "unknown";
@@ -61,7 +69,134 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 inventory));
         }
 
-        return new ProjectRegistrySnapshot(hostId, DateTimeOffset.UtcNow, projects);
+        return new ProjectRegistrySnapshot(
+            hostId,
+            DateTimeOffset.UtcNow,
+            ApplyInstallRootConflicts(
+                ApplyGlobalNativeOwnershipConflicts(projects),
+                installRoots));
+    }
+
+    private static IReadOnlyList<ProjectRuntimeView> ApplyInstallRootConflicts(
+        IReadOnlyList<ProjectRuntimeView> projects,
+        IReadOnlyDictionary<string, string?> installRoots)
+    {
+        var conflicts = installRoots
+            .Select(pair => new { ProjectKey = pair.Key, Root = NormalizePath(pair.Value) })
+            .Where(static item => item.Root is not null)
+            .GroupBy(static item => item.Root!, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .SelectMany(group => group.Select(item => new
+            {
+                item.ProjectKey,
+                Detail = $"项目安装根目录 {group.Key} 被多个项目或环境声明"
+            }))
+            .ToDictionary(static item => item.ProjectKey, static item => item.Detail, StringComparer.Ordinal);
+        if (conflicts.Count == 0)
+        {
+            return projects;
+        }
+
+        return projects.Select(project =>
+        {
+            if (!conflicts.TryGetValue(Key(project.ProjectId, project.Environment), out var detail))
+            {
+                return project;
+            }
+
+            return project with
+            {
+                Status = ProjectBindingStatus.Conflict,
+                Problems = project.Problems.Append(detail).Distinct(StringComparer.Ordinal).ToArray()
+            };
+        }).ToArray();
+    }
+
+    private static string? NormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<ProjectRuntimeView> ApplyGlobalNativeOwnershipConflicts(
+        IReadOnlyList<ProjectRuntimeView> projects)
+    {
+        var claims = projects
+            .SelectMany(project => project.Components
+                .Select(component => new NativeClaim(project, component, ResourceKey(component))))
+            .Where(static claim => claim.ResourceKey is not null)
+            .GroupBy(static claim => claim.ResourceKey!, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .SelectMany(group => group.Select(claim => new
+            {
+                ProjectKey = Key(claim.Project.ProjectId, claim.Project.Environment),
+                claim.Component.ComponentId,
+                Detail = $"主机原生资源 {claim.Component.ExpectedNativeId} 被多个项目或组件声明"
+            }))
+            .GroupBy(static item => item.ProjectKey, StringComparer.Ordinal)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.ToDictionary(
+                    static item => item.ComponentId,
+                    static item => item.Detail,
+                    StringComparer.Ordinal),
+                StringComparer.Ordinal);
+        if (claims.Count == 0)
+        {
+            return projects;
+        }
+
+        return projects.Select(project =>
+        {
+            if (!claims.TryGetValue(Key(project.ProjectId, project.Environment), out var componentConflicts))
+            {
+                return project;
+            }
+
+            var components = project.Components.Select(component =>
+                componentConflicts.TryGetValue(component.ComponentId, out var detail)
+                    ? component with { Ownership = ComponentOwnershipStatus.Conflict, Detail = detail }
+                    : component).ToArray();
+            var problems = project.Problems
+                .Concat(componentConflicts.Select(static pair => $"组件 {pair.Key}: {pair.Value}"))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return project with
+            {
+                Status = ProjectBindingStatus.Conflict,
+                Components = components,
+                Problems = problems
+            };
+        }).ToArray();
+    }
+
+    private static string? ResourceKey(ProjectComponentRuntimeView component)
+    {
+        if (string.IsNullOrWhiteSpace(component.ExpectedNativeId) || component.Kind == "pm2Legacy")
+        {
+            return null;
+        }
+
+        var adapter = component.Kind switch
+        {
+            "windowsService" => "scm",
+            "iisSite" or "staticSite" => "iis",
+            "scheduledTask" => "task",
+            _ => null
+        };
+        return adapter is null ? null : $"{adapter}:{component.ExpectedNativeId}";
     }
 
     private static ProjectRuntimeView BuildProject(
@@ -246,6 +381,11 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
     }
 
     private static string Key(string? projectId, string? environment) => $"{projectId}\n{environment}";
+
+    private sealed record NativeClaim(
+        ProjectRuntimeView Project,
+        ProjectComponentRuntimeView Component,
+        string? ResourceKey);
 
     private static bool Equals(string? left, string? right) =>
         string.Equals(left, right, StringComparison.OrdinalIgnoreCase);

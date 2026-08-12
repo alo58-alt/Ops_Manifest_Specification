@@ -27,7 +27,7 @@ PM2 Agent 不直接执行 `jlist`；只有 owner 用户下的 Bridge 生成缩�
 
 默认 `EnableMutations=false`。尚需单独授权的现场 UAT：为一个试点项目启用 mutations，逐项验证权限、超时、健康失败和回滚，不得在共享 PM2 上做广域动作。
 
-## M3：部署、更新与回滚 — 已完成 MVP 事务引擎
+## M3：部署、更新与回滚 — Windows Service 代码闭环已完成，现场 UAT 待完成
 
 - ReleaseManifest、大小和 SHA-256；
 - ZIP 绝对路径、`..` 逃逸、符号链接、条目数和展开大小限制；
@@ -35,8 +35,15 @@ PM2 Agent 不直接执行 `jlist`；只有 owner 用户下的 Bridge 生成缩�
 - `.staging` 到不可变 `releases/<version>` 的同卷移动；
 - 原子 `current.release.json`、InstalledState generation、失败目录隔离；
 - 上一 release 存在性/路径边界校验和回滚 pointer。
+- ReleaseManifest 目标架构、最低 Agent 版本和 ProjectManifest SHA-256 绑定校验；
+- Windows Service 精确入口预检、反向依赖停止、SCM `ImagePath` 切换、依赖启动、声明式健康复核和失败恢复；
+- pointer、InstalledState 或端口提交失败时恢复旧原生入口、原运行状态和旧状态文件；
+- 主机级 Windows Service、IIS site 和任务计划声明冲突检测；
+- IIS、静态站点、任务计划和 PM2 发布激活器缺失时在 `Plan` 阶段失败关闭，不再把 release 目录存在当作发布成功。
 
 MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提供方和破坏性变更仍属于后续受控能力，不得把文件回滚当作数据库回滚。
+
+自动化只使用假入口和假控制适配器，没有修改本机真实 SCM。正式生产写入仍需在试点主机完成单 Windows Service 的 Install、Update、健康失败恢复和 Rollback 现场演练。
 
 ## M4：Ops Console — 已完成 MVP
 
@@ -55,4 +62,6 @@ MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提�
 - 数据库备份/迁移提供方、日志分页/流式进度；
 - HTTPS 反向代理或企业内网远程 Console（当前只允许本机）；
 - Agent/Console 签名安装包、升级策略和灾备演练；
-- 多主机编排、HA 和集中身份平台。
+- IIS/静态站点/任务计划的专用发布激活器。
+
+多主机编排、HA 和集中身份平台不是当前阶段目标；每台主机独立部署 Agent 与本机 Console 即满足当前范围。

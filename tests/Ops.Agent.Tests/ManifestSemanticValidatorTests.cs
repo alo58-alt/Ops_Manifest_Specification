@@ -36,6 +36,16 @@ public sealed class ManifestSemanticValidatorTests
     }
 
     [Fact]
+    public void DuplicateReleaseComponentPayload_FailsClosed()
+    {
+        var document = ReadExample("invalid", "release-manifest-duplicate-component.json");
+
+        var errors = ManifestSemanticValidator.Validate("ReleaseManifest", document);
+
+        Assert.Contains(errors, static error => error.Contains("componentId", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DuplicatePortBinding_FailsClosed()
     {
         var document = ReadExample("invalid", "port-registry-duplicate.json");

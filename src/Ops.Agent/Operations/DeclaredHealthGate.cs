@@ -16,7 +16,16 @@ public interface IComponentHealthGate
         CancellationToken cancellationToken);
 }
 
-public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComponentHealthGate
+public interface IManifestHealthGate
+{
+    Task<HealthGateResult> ProbeAsync(
+        JsonObject projectManifest,
+        JsonObject binding,
+        string componentId,
+        CancellationToken cancellationToken);
+}
+
+public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComponentHealthGate, IManifestHealthGate
 {
     public async Task<HealthGateResult> ProbeAsync(
         string projectId,
@@ -50,17 +59,31 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
             }
         }
 
-        var component = manifest["components"]?.AsArray().OfType<JsonObject>()
-            .SingleOrDefault(item => item["id"]?.GetValue<string>() == componentId);
-        var probes = component?["health"]?.AsArray().OfType<JsonObject>().ToArray() ?? [];
-        if (probes.Length == 0)
-        {
-            return new HealthGateResult(true, "组件未声明健康探针");
-        }
-
         if (binding is null)
         {
             return new HealthGateResult(false, "缺少 EnvironmentBinding");
+        }
+
+        return await ProbeAsync(manifest, binding, componentId, cancellationToken);
+    }
+
+    public async Task<HealthGateResult> ProbeAsync(
+        JsonObject projectManifest,
+        JsonObject binding,
+        string componentId,
+        CancellationToken cancellationToken)
+    {
+        var component = projectManifest["components"]?.AsArray().OfType<JsonObject>()
+            .SingleOrDefault(item => item["id"]?.GetValue<string>() == componentId);
+        if (component is null)
+        {
+            return new HealthGateResult(false, $"ProjectManifest 中不存在组件 {componentId}");
+        }
+
+        var probes = component["health"]?.AsArray().OfType<JsonObject>().ToArray() ?? [];
+        if (probes.Length == 0)
+        {
+            return new HealthGateResult(true, "组件未声明健康探针");
         }
 
         foreach (var probe in probes)

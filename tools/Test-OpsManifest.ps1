@@ -231,6 +231,7 @@ function Test-ReleaseManifestSemantics {
     }
 
     $payloads = @($Document.componentPayloads)
+    Add-DuplicateErrors -Items $payloads -PropertyName 'componentId' -Label '组件载荷 componentId' -Errors $Errors
     $payloadKeys = @($payloads | ForEach-Object { "$($_.componentId)/$($_.entrypoint)" })
     foreach ($group in @($payloadKeys | Group-Object | Where-Object Count -GT 1)) {
         $Errors.Add("组件入口载荷重复：$($group.Name)")
@@ -355,7 +356,7 @@ foreach ($file in $files) {
 
     try {
         $raw = Get-Content -LiteralPath $file.FullName -Raw -Encoding utf8
-        $document = $raw | ConvertFrom-Json -Depth 100
+        $document = $raw | ConvertFrom-Json
     } catch {
         $errors.Add("JSON 解析失败：$($_.Exception.Message)")
     }

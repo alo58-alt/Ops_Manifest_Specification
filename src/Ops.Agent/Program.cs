@@ -24,6 +24,9 @@ builder.Services
     .Validate(
         static options => options.InventoryIntervalSeconds is >= 5 and <= 3600,
         "Ops:InventoryIntervalSeconds 必须位于 5 到 3600 秒")
+    .Validate(
+        OpsOptions.HasSafeAllowedProjectInstallRoots,
+        "启用 Ops:EnableMutations 时必须配置非盘符根目录的 Ops:AllowedProjectInstallRoots")
     .ValidateOnStart();
 
 builder.Services.AddSingleton(
@@ -37,11 +40,16 @@ builder.Services.AddSingleton<InventoryCoordinator>();
 builder.Services.AddSingleton<IProjectRegistry, ProjectRegistry>();
 builder.Services.AddSingleton<OperationGate>();
 builder.Services.AddSingleton<OperationCoordinator>();
-builder.Services.AddSingleton<IComponentHealthGate, DeclaredHealthGate>();
+builder.Services.AddSingleton<DeclaredHealthGate>();
+builder.Services.AddSingleton<IComponentHealthGate>(
+    static provider => provider.GetRequiredService<DeclaredHealthGate>());
+builder.Services.AddSingleton<IManifestHealthGate>(
+    static provider => provider.GetRequiredService<DeclaredHealthGate>());
 builder.Services.AddSingleton<ArtifactPackageValidator>();
 builder.Services.AddSingleton<SafeZipExtractor>();
 builder.Services.AddSingleton<IPortRegistryStore, SqlitePortRegistryStore>();
-builder.Services.AddSingleton<IDeploymentActivator, ReleasePointerDeploymentActivator>();
+builder.Services.AddSingleton<IDeploymentEntrypointAdapter, WindowsServiceDeploymentEntrypointAdapter>();
+builder.Services.AddSingleton<IDeploymentActivator, NativeDeploymentActivator>();
 builder.Services.AddSingleton<DeploymentEngine>();
 builder.Services.AddSingleton<FixedCommandRunner>();
 builder.Services.AddSingleton<IPm2OwnerControlBridge, NamedPipePm2OwnerControlBridge>();

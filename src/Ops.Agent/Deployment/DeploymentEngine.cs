@@ -10,30 +10,6 @@ using System.Collections.Concurrent;
 
 namespace CompanyOps.Agent.Deployment;
 
-public sealed record DeploymentActivationResult(bool Success, string? Detail = null);
-
-public interface IDeploymentActivator
-{
-    Task<DeploymentActivationResult> ActivateAsync(
-        string projectId,
-        string environment,
-        string releasePath,
-        CancellationToken cancellationToken);
-}
-
-public sealed class ReleasePointerDeploymentActivator : IDeploymentActivator
-{
-    public Task<DeploymentActivationResult> ActivateAsync(
-        string projectId,
-        string environment,
-        string releasePath,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(
-            Directory.Exists(releasePath)
-                ? new DeploymentActivationResult(true, "不可变 release 已就绪；原生资源仍由白名单控制适配器管理")
-                : new DeploymentActivationResult(false, "release 目录不存在"));
-}
-
 public sealed class DeploymentEngine(
     AgentSnapshotCache snapshotCache,
     ArtifactPackageValidator packageValidator,
@@ -50,6 +26,8 @@ public sealed class DeploymentEngine(
     private readonly ResolvedOpsPaths _paths = pathResolver.Resolve();
     private readonly ConcurrentDictionary<string, IdempotentDeployment> _deployments =
         new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _auditedOperations =
+        new(StringComparer.Ordinal);
 
     public Task<DeploymentResult> ExecuteAsync(
         DeploymentRequest request,
@@ -57,22 +35,47 @@ public sealed class DeploymentEngine(
     {
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 200)
         {
-            return Task.FromResult(Reject(request, "invalid_idempotency_key", "IdempotencyKey 不能为空且不能超过 200 字符"));
+            return AuditStandaloneResultAsync(
+                Reject(request, "invalid_idempotency_key", "IdempotencyKey 不能为空且不能超过 200 字符"));
         }
 
         var fingerprint = JsonSerializer.Serialize(request with { IdempotencyKey = string.Empty }, jsonOptions);
         var candidate = new IdempotentDeployment(
             fingerprint,
             new Lazy<Task<DeploymentResult>>(
-                () => ExecuteCoreAsync(request, cancellationToken),
+                () => ExecuteAndEnsureAuditAsync(request, cancellationToken),
                 LazyThreadSafetyMode.ExecutionAndPublication));
         var operation = _deployments.GetOrAdd(request.IdempotencyKey, candidate);
-        return string.Equals(operation.Fingerprint, fingerprint, StringComparison.Ordinal)
-            ? operation.Execution.Value
-            : Task.FromResult(Reject(
+        if (string.Equals(operation.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            return operation.Execution.Value;
+        }
+
+        return AuditStandaloneResultAsync(Reject(
                 request,
                 "idempotency_conflict",
                 "同一 IdempotencyKey 已用于不同部署请求"));
+    }
+
+    private async Task<DeploymentResult> AuditStandaloneResultAsync(DeploymentResult result)
+    {
+        using var auditTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await AppendAuditAsync(result, auditTimeout.Token);
+        return result;
+    }
+
+    private async Task<DeploymentResult> ExecuteAndEnsureAuditAsync(
+        DeploymentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await ExecuteCoreAsync(request, cancellationToken);
+        if (!_auditedOperations.ContainsKey(result.OperationId))
+        {
+            using var auditTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await AuditAsync(result, auditTimeout.Token);
+        }
+
+        return result;
     }
 
     private async Task<DeploymentResult> ExecuteCoreAsync(
@@ -108,9 +111,27 @@ public sealed class DeploymentEngine(
         var steps = new List<string>
         {
             "ReleaseManifest 与制品大小/SHA-256 校验通过",
-            "EnvironmentBinding、InstalledState generation 与项目归属校验通过",
+            "ProjectManifest 哈希、EnvironmentBinding、InstalledState generation 与项目归属校验通过",
             $"计划目标：{context.ReleasePath}"
         };
+        var activationRequest = new DeploymentActivationRequest(
+            request.ProjectId,
+            request.Environment,
+            context.ReleasePath,
+            context.ProjectManifest,
+            context.ReleaseManifest,
+            context.Binding);
+        var activationPlan = await activator.PlanAsync(activationRequest, cancellationToken);
+        if (!activationPlan.Success)
+        {
+            return Reject(
+                request,
+                "activation_not_supported",
+                activationPlan.Detail ?? "发布缺少受控激活能力",
+                steps);
+        }
+
+        steps.AddRange(activationPlan.Steps ?? []);
         if (request.Action == DeploymentAction.Plan)
         {
             return Success(request, context.CurrentVersion, validation.Version, steps);
@@ -123,10 +144,17 @@ public sealed class DeploymentEngine(
 
         using var lease = operationGate.TryAcquire(
             new[] { $"project:{request.ProjectId}:{request.Environment}" }
-                .Concat(context.Ports.Select(static port => $"port:{port.Protocol}:{port.Address}:{port.Port}")));
+                .Concat(context.Ports.Select(static port => $"port:{port.Protocol}:{port.Address}:{port.Port}"))
+                .Concat(context.Binding["componentBindings"]!.AsArray().OfType<JsonObject>()
+                    .Select(static item => item["nativeName"]!.GetValue<string>())));
         if (lease is null)
         {
             return Reject(request, "resource_busy", "项目或端口资源正在执行其他操作", steps);
+        }
+
+        if (Directory.Exists(context.StagingPath) || Directory.Exists(context.ReleasePath))
+        {
+            return Reject(request, "release_path_exists", "staging 或目标 release 已存在，拒绝覆盖", steps);
         }
 
         var reservation = await portRegistry.ReserveAsync(context.Ports, cancellationToken);
@@ -137,13 +165,11 @@ public sealed class DeploymentEngine(
 
         steps.Add("端口批量事务预留成功");
         var stagingPath = context.StagingPath;
+        DeploymentActivationResult? activation = null;
+        var pointerSnapshot = CaptureFile(Path.Combine(context.InstallRoot, "current.release.json"));
+        var installedStateSnapshot = CaptureFile(InstalledStatePath(request.ProjectId, request.Environment));
         try
         {
-            if (Directory.Exists(stagingPath) || Directory.Exists(context.ReleasePath))
-            {
-                return Reject(request, "release_path_exists", "staging 或目标 release 已存在，拒绝覆盖", steps);
-            }
-
             Directory.CreateDirectory(stagingPath);
             foreach (var artifact in validation.Artifacts)
             {
@@ -163,13 +189,14 @@ public sealed class DeploymentEngine(
                 request.ReleaseManifestPath,
                 Path.Combine(metadataDirectory, "release-manifest.json"),
                 overwrite: false);
+            File.Copy(
+                context.ProjectManifestPath,
+                Path.Combine(metadataDirectory, "project-manifest.json"),
+                overwrite: false);
             steps.Add("staging 原子移动为不可变 release");
 
-            var activation = await activator.ActivateAsync(
-                request.ProjectId,
-                request.Environment,
-                context.ReleasePath,
-                cancellationToken);
+            activation = await activator.ActivateAsync(activationRequest, cancellationToken);
+            steps.AddRange(activation.Steps ?? []);
             if (!activation.Success)
             {
                 await QuarantineFailedReleaseAsync(context, request.OperationId);
@@ -185,12 +212,30 @@ public sealed class DeploymentEngine(
             await AuditAsync(result, cancellationToken);
             return result;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        catch (Exception exception) when (
+            exception is OperationCanceledException or IOException or UnauthorizedAccessException or
+                InvalidDataException or JsonException or Microsoft.Data.Sqlite.SqliteException)
         {
+            using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var cleanupToken = cancellationToken.IsCancellationRequested ? cleanupTimeout.Token : cancellationToken;
+            var recoveryDetails = new List<string>();
+            if (activation?.Rollback is not null)
+            {
+                var restored = await activation.Rollback.RestoreAsync(cleanupToken);
+                recoveryDetails.Add($"原生入口恢复{(restored.Success ? "成功" : "失败")}：{restored.Detail}");
+            }
+
+            recoveryDetails.Add(await RestoreFileAsync(pointerSnapshot, cleanupToken));
+            recoveryDetails.Add(await RestoreFileAsync(installedStateSnapshot, cleanupToken));
             await QuarantineFailedReleaseAsync(context, request.OperationId);
-            await portRegistry.ReleaseOperationAsync(request.OperationId, cancellationToken);
-            var result = Reject(request, "deployment_failed", exception.Message, steps);
-            await AuditAsync(result, cancellationToken);
+            await portRegistry.ReleaseOperationAsync(request.OperationId, cleanupToken);
+            steps.AddRange(recoveryDetails);
+            var result = Reject(
+                request,
+                exception is OperationCanceledException ? "deployment_cancelled" : "deployment_failed",
+                $"{exception.Message}；{string.Join("；", recoveryDetails)}",
+                steps);
+            await AuditAsync(result, cleanupToken);
             return result;
         }
     }
@@ -218,7 +263,18 @@ public sealed class DeploymentEngine(
             return Reject(request, "generation_or_ownership_conflict", "项目归属冲突或 generation 已变化");
         }
 
+        if (project.Status != ProjectBindingStatus.Installed ||
+            project.Components.Any(static component => component.Ownership != ComponentOwnershipStatus.Owned))
+        {
+            return Reject(request, "ownership_not_proven", "回滚前必须证明所有已安装原生组件的唯一归属");
+        }
+
         var installRoot = Path.GetFullPath(binding["roots"]!["install"]!.GetValue<string>());
+        if (!IsAllowedInstallRoot(installRoot))
+        {
+            return Reject(request, "install_root_not_allowed", "项目安装根目录不在 Agent 允许的项目父目录下");
+        }
+
         var pointerPath = Path.Combine(installRoot, "current.release.json");
         if (!File.Exists(pointerPath))
         {
@@ -236,30 +292,61 @@ public sealed class DeploymentEngine(
         }
 
         var previousManifestPath = Path.Combine(previousPath, ".companyops", "release-manifest.json");
-        if (!File.Exists(previousManifestPath))
+        var previousProjectManifestPath = Path.Combine(previousPath, ".companyops", "project-manifest.json");
+        if (!File.Exists(previousManifestPath) || !File.Exists(previousProjectManifestPath))
         {
-            return Reject(request, "rollback_unavailable", "上一版本缺少受控 ReleaseManifest");
+            return Reject(request, "rollback_unavailable", "上一版本缺少受控 ReleaseManifest 或 ProjectManifest");
         }
 
         var previousManifest = JsonNode.Parse(
-            await File.ReadAllTextAsync(previousManifestPath, cancellationToken))?.AsObject();
-        if (previousManifest?["metadata"]?["projectId"]?.GetValue<string>() != request.ProjectId ||
+            await File.ReadAllTextAsync(previousManifestPath, cancellationToken))!.AsObject();
+        var previousProjectManifest = JsonNode.Parse(
+            await File.ReadAllTextAsync(previousProjectManifestPath, cancellationToken))!.AsObject();
+        if (previousManifest["metadata"]?["projectId"]?.GetValue<string>() != request.ProjectId ||
             previousManifest["metadata"]?["version"]?.GetValue<string>() != previousVersion)
         {
             return Reject(request, "rollback_manifest_conflict", "上一版本 ReleaseManifest 与 pointer 不一致");
         }
 
-        using var lease = operationGate.TryAcquire([$"project:{request.ProjectId}:{request.Environment}"]);
+        await using (var projectStream = File.OpenRead(previousProjectManifestPath))
+        {
+            var actualHash = Convert.ToHexString(
+                await SHA256.HashDataAsync(projectStream, cancellationToken)).ToLowerInvariant();
+            if (!string.Equals(
+                    actualHash,
+                    previousManifest["projectManifestSha256"]?.GetValue<string>(),
+                    StringComparison.Ordinal))
+            {
+                return Reject(request, "rollback_manifest_conflict", "上一版本 ProjectManifest 哈希不可信");
+            }
+        }
+
+        var activationRequest = new DeploymentActivationRequest(
+            request.ProjectId,
+            request.Environment,
+            previousPath,
+            previousProjectManifest,
+            previousManifest,
+            binding);
+        var activationPlan = await activator.PlanAsync(activationRequest, cancellationToken);
+        if (!activationPlan.Success)
+        {
+            return Reject(
+                request,
+                "rollback_activation_not_supported",
+                activationPlan.Detail ?? "上一版本缺少受控激活能力");
+        }
+
+        using var lease = operationGate.TryAcquire(
+            new[] { $"project:{request.ProjectId}:{request.Environment}" }
+                .Concat(binding["componentBindings"]!.AsArray().OfType<JsonObject>()
+                    .Select(static item => item["nativeName"]!.GetValue<string>())));
         if (lease is null)
         {
             return Reject(request, "resource_busy", "项目正在执行其他操作");
         }
 
-        var activation = await activator.ActivateAsync(
-            request.ProjectId,
-            request.Environment,
-            previousPath,
-            cancellationToken);
+        var activation = await activator.ActivateAsync(activationRequest, cancellationToken);
         if (!activation.Success)
         {
             return Reject(request, "rollback_activation_failed", activation.Detail ?? "回滚激活失败");
@@ -267,25 +354,55 @@ public sealed class DeploymentEngine(
 
         var context = new DeploymentContext(
             binding,
+            previousProjectManifest,
+            previousProjectManifestPath,
+            previousManifest,
             installRoot,
             previousPath,
             string.Empty,
             currentVersion,
             [],
             null);
-        await WriteReleasePointerAsync(context, previousVersion, cancellationToken, currentVersion);
-        await WriteInstalledStateAsync(
-            request with { ReleaseManifestPath = previousManifestPath },
-            context,
-            previousVersion,
-            cancellationToken);
-        var result = Success(
-            request,
-            currentVersion,
-            previousVersion,
-            ["上一不可变 release 存在", "激活器确认成功", "release pointer 已原子回拨"]);
-        await AuditAsync(result, cancellationToken);
-        return result;
+        var pointerSnapshot = CaptureFile(pointerPath);
+        var installedStateSnapshot = CaptureFile(InstalledStatePath(request.ProjectId, request.Environment));
+        try
+        {
+            await WriteReleasePointerAsync(context, previousVersion, cancellationToken, currentVersion);
+            await WriteInstalledStateAsync(
+                request with { ReleaseManifestPath = previousManifestPath },
+                context,
+                previousVersion,
+                cancellationToken);
+            var result = Success(
+                request,
+                currentVersion,
+                previousVersion,
+                new[] { "上一不可变 release 与声明哈希可信" }
+                    .Concat(activation.Steps ?? [])
+                    .Append("release pointer 与 InstalledState 已原子回拨")
+                    .ToArray());
+            await AuditAsync(result, cancellationToken);
+            return result;
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or IOException or UnauthorizedAccessException or
+                InvalidDataException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var cleanupToken = cancellationToken.IsCancellationRequested ? cleanupTimeout.Token : cancellationToken;
+            var restored = activation.Rollback is null
+                ? new DeploymentActivationResult(false, "激活器未返回可恢复事务")
+                : await activation.Rollback.RestoreAsync(cleanupToken);
+            var pointerRestore = await RestoreFileAsync(pointerSnapshot, cleanupToken);
+            var stateRestore = await RestoreFileAsync(installedStateSnapshot, cleanupToken);
+            var result = Reject(
+                request,
+                exception is OperationCanceledException ? "rollback_cancelled" : "rollback_state_commit_failed",
+                $"{exception.Message}；原生入口恢复{(restored.Success ? "成功" : "失败")}：{restored.Detail}；{pointerRestore}；{stateRestore}",
+                activation.Steps);
+            await AuditAsync(result, cleanupToken);
+            return result;
+        }
     }
 
     private async Task<DeploymentContext> LoadContextAsync(
@@ -299,6 +416,27 @@ public sealed class DeploymentEngine(
             return DeploymentContext.Fail("binding_not_unique", "无法取得唯一 EnvironmentBinding");
         }
 
+        var projectManifest = await FindProjectManifestAsync(request.ProjectId, cancellationToken);
+        if (projectManifest is null)
+        {
+            return DeploymentContext.Fail("project_manifest_not_unique", "无法取得唯一 ProjectManifest");
+        }
+
+        var releaseManifest = JsonNode.Parse(
+            await File.ReadAllTextAsync(request.ReleaseManifestPath!, cancellationToken))!.AsObject();
+        var expectedProjectHash = releaseManifest["projectManifestSha256"]?.GetValue<string>();
+        await using (var projectStream = File.OpenRead(projectManifest.Path))
+        {
+            var actualProjectHash = Convert.ToHexString(
+                await SHA256.HashDataAsync(projectStream, cancellationToken)).ToLowerInvariant();
+            if (!string.Equals(expectedProjectHash, actualProjectHash, StringComparison.Ordinal))
+            {
+                return DeploymentContext.Fail(
+                    "project_manifest_hash_mismatch",
+                    "ReleaseManifest 绑定的 ProjectManifest SHA-256 与当前声明不一致");
+            }
+        }
+
         var project = snapshotCache.Read().Projects?.Projects.SingleOrDefault(
             item => item.ProjectId == request.ProjectId && item.Environment == request.Environment);
         if (project is null || project.Status == ProjectBindingStatus.Conflict ||
@@ -307,7 +445,33 @@ public sealed class DeploymentEngine(
             return DeploymentContext.Fail("generation_or_ownership_conflict", "项目归属冲突或 generation 已变化");
         }
 
+
+        if (request.Action == DeploymentAction.Install && project.Generation is not null)
+        {
+            return DeploymentContext.Fail("deployment_action_conflict", "项目已有 InstalledState，必须使用 Update");
+        }
+
+        if (request.Action == DeploymentAction.Update && project.Generation is null)
+        {
+            return DeploymentContext.Fail("deployment_action_conflict", "项目尚未安装，必须使用 Install");
+        }
+
+        if ((request.Action == DeploymentAction.Update ||
+             request.Action == DeploymentAction.Plan && project.Generation is not null) &&
+            (project.Status != ProjectBindingStatus.Installed ||
+             project.Components.Any(static component => component.Ownership != ComponentOwnershipStatus.Owned)))
+        {
+            return DeploymentContext.Fail("ownership_not_proven", "更新前必须证明所有已安装原生组件的唯一归属");
+        }
+
         var installRoot = Path.GetFullPath(binding["roots"]!["install"]!.GetValue<string>());
+        if (!IsAllowedInstallRoot(installRoot))
+        {
+            return DeploymentContext.Fail(
+                "install_root_not_allowed",
+                "项目安装根目录不在 Agent 允许的项目父目录下");
+        }
+
         var releasePath = Path.GetFullPath(Path.Combine(installRoot, "releases", version));
         var stagingPath = Path.GetFullPath(Path.Combine(installRoot, ".staging", request.OperationId));
         if (!SafeSegment(request.OperationId) || !IsUnderRoot(releasePath, installRoot) || !IsUnderRoot(stagingPath, installRoot))
@@ -326,7 +490,32 @@ public sealed class DeploymentEngine(
                 item["portId"]!.GetValue<string>(),
                 request.OperationId))
             .ToArray() ?? [];
-        return new DeploymentContext(binding, installRoot, releasePath, stagingPath, project.InstalledVersion, ports, null);
+        return new DeploymentContext(
+            binding,
+            projectManifest.Root,
+            projectManifest.Path,
+            releaseManifest,
+            installRoot,
+            releasePath,
+            stagingPath,
+            project.InstalledVersion,
+            ports,
+            null);
+    }
+
+    private async Task<ProjectManifestDocument?> FindProjectManifestAsync(
+        string projectId,
+        CancellationToken cancellationToken)
+    {
+        var entries = snapshotCache.Read().Catalog?.Entries.Where(
+            item => item.IsValid && item.ManifestKind == "ProjectManifest" && item.ProjectId == projectId).ToArray() ?? [];
+        if (entries.Length != 1)
+        {
+            return null;
+        }
+
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(entries[0].Path, cancellationToken)) as JsonObject;
+        return root is null ? null : new ProjectManifestDocument(entries[0].Path, root);
     }
 
     private async Task<JsonObject?> FindBindingAsync(
@@ -374,15 +563,12 @@ public sealed class DeploymentEngine(
         string version,
         CancellationToken cancellationToken)
     {
-        var projectEntry = snapshotCache.Read().Catalog?.Entries.Single(
-            item => item.IsValid && item.ManifestKind == "ProjectManifest" && item.ProjectId == request.ProjectId);
-        var project = JsonNode.Parse(await File.ReadAllTextAsync(projectEntry!.Path, cancellationToken))!.AsObject();
         var runtimeProject = snapshotCache.Read().Projects?.Projects.SingleOrDefault(item =>
             item.ProjectId == request.ProjectId && item.Environment == request.Environment);
         var bindings = context.Binding["componentBindings"]!.AsArray().OfType<JsonObject>()
             .ToDictionary(static item => item["componentId"]!.GetValue<string>(), StringComparer.Ordinal);
         var components = new JsonArray();
-        foreach (var component in project["components"]!.AsArray().OfType<JsonObject>())
+        foreach (var component in context.ProjectManifest["components"]!.AsArray().OfType<JsonObject>())
         {
             var id = component["id"]!.GetValue<string>();
             var kind = component["kind"]!.GetValue<string>();
@@ -453,9 +639,7 @@ public sealed class DeploymentEngine(
         }
 
         Directory.CreateDirectory(_paths.ManifestDirectory);
-        var destination = Path.Combine(
-            _paths.ManifestDirectory,
-            $"{request.ProjectId}.{request.Environment}.{_paths.HostId}.installed-state.json");
+        var destination = InstalledStatePath(request.ProjectId, request.Environment);
         var temporary = destination + $".{request.OperationId}.tmp";
         await File.WriteAllTextAsync(temporary, state.ToJsonString(jsonOptions), cancellationToken);
         File.Move(temporary, destination, overwrite: true);
@@ -502,7 +686,13 @@ public sealed class DeploymentEngine(
         return Task.CompletedTask;
     }
 
-    private async Task AuditAsync(DeploymentResult result, CancellationToken cancellationToken) =>
+    private async Task AuditAsync(DeploymentResult result, CancellationToken cancellationToken)
+    {
+        await AppendAuditAsync(result, cancellationToken);
+        _auditedOperations.TryAdd(result.OperationId, 0);
+    }
+
+    private async Task AppendAuditAsync(DeploymentResult result, CancellationToken cancellationToken) =>
         await stateStore.AppendAuditEventAsync(
             new AuditEvent(
                 Guid.CreateVersion7().ToString(),
@@ -524,6 +714,76 @@ public sealed class DeploymentEngine(
         return resolvedPath.StartsWith(resolvedRoot, StringComparison.OrdinalIgnoreCase);
     }
 
+    private string InstalledStatePath(string projectId, string environment) =>
+        Path.Combine(
+            _paths.ManifestDirectory,
+            $"{projectId}.{environment}.{_paths.HostId}.installed-state.json");
+
+    private bool IsAllowedInstallRoot(string installRoot)
+    {
+        if (_options.AllowedProjectInstallRoots is not { Length: > 0 })
+        {
+            return false;
+        }
+
+        try
+        {
+            var resolvedInstallRoot = Path.GetFullPath(installRoot);
+            return _options.AllowedProjectInstallRoots.Any(configuredRoot =>
+            {
+                if (string.IsNullOrWhiteSpace(configuredRoot))
+                {
+                    return false;
+                }
+
+                var allowedRoot = Path.GetFullPath(
+                    Environment.ExpandEnvironmentVariables(configuredRoot.Trim()));
+                var pathRoot = Path.GetPathRoot(allowedRoot);
+                if (pathRoot is null || string.Equals(
+                        Path.TrimEndingDirectorySeparator(allowedRoot),
+                        Path.TrimEndingDirectorySeparator(pathRoot),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                var prefix = Path.TrimEndingDirectorySeparator(allowedRoot) + Path.DirectorySeparatorChar;
+                return resolvedInstallRoot.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static FileSnapshot CaptureFile(string path) =>
+        File.Exists(path)
+            ? new FileSnapshot(path, true, File.ReadAllBytes(path))
+            : new FileSnapshot(path, false, null);
+
+    private static async Task<string> RestoreFileAsync(
+        FileSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (!snapshot.Existed)
+        {
+            if (File.Exists(snapshot.Path))
+            {
+                File.Delete(snapshot.Path);
+            }
+
+            return $"已移除本次新建状态文件 {Path.GetFileName(snapshot.Path)}";
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshot.Path)!);
+        var temporary = snapshot.Path + $".restore.{Guid.CreateVersion7():N}.tmp";
+        await File.WriteAllBytesAsync(temporary, snapshot.Content!, cancellationToken);
+        File.Move(temporary, snapshot.Path, overwrite: true);
+        return $"已恢复原状态文件 {Path.GetFileName(snapshot.Path)}";
+    }
+
     private static DeploymentResult Success(
         DeploymentRequest request,
         string? from,
@@ -540,6 +800,9 @@ public sealed class DeploymentEngine(
 
     private sealed record DeploymentContext(
         JsonObject Binding,
+        JsonObject ProjectManifest,
+        string ProjectManifestPath,
+        JsonObject ReleaseManifest,
         string InstallRoot,
         string ReleasePath,
         string StagingPath,
@@ -548,8 +811,22 @@ public sealed class DeploymentEngine(
         (string Code, string Detail)? Error)
     {
         public static DeploymentContext Fail(string code, string detail) =>
-            new(new JsonObject(), string.Empty, string.Empty, string.Empty, null, [], (code, detail));
+            new(
+                new JsonObject(),
+                new JsonObject(),
+                string.Empty,
+                new JsonObject(),
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                null,
+                [],
+                (code, detail));
     }
+
+    private sealed record ProjectManifestDocument(string Path, JsonObject Root);
+
+    private sealed record FileSnapshot(string Path, bool Existed, byte[]? Content);
 
     private sealed record IdempotentDeployment(
         string Fingerprint,

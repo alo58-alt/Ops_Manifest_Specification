@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using CompanyOps.Contracts;
 using CompanyOps.Agent.Catalog;
@@ -52,6 +53,7 @@ public sealed class ArtifactPackageValidator(OpsPathResolver pathResolver)
                 }
 
                 errors.AddRange(ManifestSemanticValidator.Validate("ReleaseManifest", root));
+                ValidateTargetCompatibility(root, errors);
             }
         }
 
@@ -108,5 +110,35 @@ public sealed class ArtifactPackageValidator(OpsPathResolver pathResolver)
         }
 
         return new ArtifactValidationResult(errors.Count == 0, projectId, version, validated, errors);
+    }
+
+    private static void ValidateTargetCompatibility(JsonObject manifest, List<string> errors)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            errors.Add("ReleaseManifest 目标为 Windows，但 Agent 当前不在 Windows 上运行");
+            return;
+        }
+
+        var expectedArchitecture = RuntimeInformation.OSArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.Arm64 => "arm64",
+            _ => null
+        };
+        var targetArchitecture = manifest["target"]?["architecture"]?.GetValue<string>();
+        if (expectedArchitecture is null ||
+            !string.Equals(expectedArchitecture, targetArchitecture, StringComparison.Ordinal))
+        {
+            errors.Add($"ReleaseManifest 架构 {targetArchitecture} 与主机 {RuntimeInformation.OSArchitecture} 不兼容");
+        }
+
+        var minimumText = manifest["target"]?["minAgentVersion"]?.GetValue<string>();
+        var minimumBase = minimumText?.Split('-', 2)[0];
+        var current = typeof(ArtifactPackageValidator).Assembly.GetName().Version;
+        if (!Version.TryParse(minimumBase, out var minimum) || current is null || current < minimum)
+        {
+            errors.Add($"ReleaseManifest 要求 Agent >= {minimumText}，当前版本为 {current}");
+        }
     }
 }

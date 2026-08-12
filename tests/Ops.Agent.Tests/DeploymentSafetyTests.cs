@@ -71,6 +71,39 @@ public sealed class DeploymentSafetyTests
     }
 
     [Fact]
+    public async Task ReleaseManifestForDifferentArchitecture_IsRejected()
+    {
+        using var directory = new TestDirectory();
+        var zipPath = Path.Combine(directory.FullPath, "package.zip");
+        await CreateZipAsync(zipPath, "app/service.txt", "payload");
+        var manifest = await WriteReleaseManifestAsync(directory.FullPath, zipPath);
+        var otherArchitecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture ==
+            System.Runtime.InteropServices.Architecture.X64
+                ? "arm64"
+                : "x64";
+        var json = await File.ReadAllTextAsync(manifest, TestContext.Current.CancellationToken);
+        var currentArchitecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture ==
+            System.Runtime.InteropServices.Architecture.X64
+                ? "x64"
+                : "arm64";
+        await File.WriteAllTextAsync(
+            manifest,
+            json.Replace(
+                $"\"architecture\": \"{currentArchitecture}\"",
+                $"\"architecture\": \"{otherArchitecture}\"",
+                StringComparison.Ordinal),
+            TestContext.Current.CancellationToken);
+
+        var result = await CreateArtifactValidator(directory.FullPath).ValidateAsync(
+            manifest,
+            directory.FullPath,
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, static error => error.Contains("架构", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PortRegistry_WildcardConflictsAndBatchIsAtomic()
     {
         using var directory = new TestDirectory();
@@ -110,6 +143,8 @@ public sealed class DeploymentSafetyTests
               "components": [ { "id": "api", "kind": "windowsService" } ]
             }
             """);
+        var projectHash = Convert.ToHexString(
+            SHA256.HashData(File.ReadAllBytes(projectPath))).ToLowerInvariant();
         File.WriteAllText(
             bindingPath,
             $$"""
@@ -141,7 +176,7 @@ public sealed class DeploymentSafetyTests
                 "releaseId": "sample-1.0.0-test", "builtAt": "2026-08-12T00:00:00Z"
               },
               "target": { "os": "windows", "architecture": "x64", "minAgentVersion": "0.1.0" },
-              "projectManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "projectManifestSha256": "{{projectHash}}",
               "artifacts": [
                 {
                   "id": "package", "fileName": "package.zip", "mediaType": "application/zip",
@@ -161,7 +196,8 @@ public sealed class DeploymentSafetyTests
             StateDirectory = Path.Combine(directory.FullPath, "state"),
             PipeName = "test",
             InventoryIntervalSeconds = 30,
-            EnableMutations = true
+            EnableMutations = true,
+            AllowedProjectInstallRoots = [directory.FullPath]
         });
         var resolver = new OpsPathResolver(options);
         var jsonOptions = TestDirectory.CreateJsonOptions();
@@ -191,7 +227,7 @@ public sealed class DeploymentSafetyTests
             new ArtifactPackageValidator(resolver),
             new SafeZipExtractor(),
             portStore,
-            new ReleasePointerDeploymentActivator(),
+            new PassthroughDeploymentActivator(),
             new OperationGate(),
             stateStore,
             resolver,
@@ -217,9 +253,17 @@ public sealed class DeploymentSafetyTests
 
         var previousRelease = Path.Combine(installRoot, "releases", "0.9.0");
         Directory.CreateDirectory(Path.Combine(previousRelease, ".companyops"));
+        File.Copy(
+            projectPath,
+            Path.Combine(previousRelease, ".companyops", "project-manifest.json"));
         File.WriteAllText(
             Path.Combine(previousRelease, ".companyops", "release-manifest.json"),
-            """{ "metadata": { "projectId": "sample", "version": "0.9.0" } }""");
+            $$"""
+            {
+              "metadata": { "projectId": "sample", "version": "0.9.0" },
+              "projectManifestSha256": "{{projectHash}}"
+            }
+            """);
         File.WriteAllText(
             Path.Combine(installRoot, "current.release.json"),
             $$"""
@@ -312,6 +356,10 @@ public sealed class DeploymentSafetyTests
     {
         var bytes = await File.ReadAllBytesAsync(zipPath);
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var architecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture ==
+            System.Runtime.InteropServices.Architecture.X64
+                ? "x64"
+                : "arm64";
         var manifestPath = Path.Combine(directory, "release.json");
         await File.WriteAllTextAsync(
             manifestPath,
@@ -324,7 +372,7 @@ public sealed class DeploymentSafetyTests
                 "projectId": "sample", "version": "1.0.0",
                 "releaseId": "sample-1.0.0-test", "builtAt": "2026-08-12T00:00:00Z"
               },
-              "target": { "os": "windows", "architecture": "x64", "minAgentVersion": "0.1.0" },
+              "target": { "os": "windows", "architecture": "{{architecture}}", "minAgentVersion": "0.1.0" },
               "projectManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "artifacts": [
                 {

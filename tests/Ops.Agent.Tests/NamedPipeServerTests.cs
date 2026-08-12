@@ -58,7 +58,7 @@ public sealed class NamedPipeServerTests
                 new ArtifactPackageValidator(pathResolver),
                 new SafeZipExtractor(),
                 portStore,
-                new ReleasePointerDeploymentActivator(),
+                new PassthroughDeploymentActivator(),
                 new OperationGate(),
                 store,
                 pathResolver,

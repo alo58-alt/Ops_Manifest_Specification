@@ -1,8 +1,10 @@
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
-    [string]$PublishRoot = (Join-Path $PSScriptRoot '..\artifacts\publish'),
-    [string]$InstallRoot = (Join-Path $env:ProgramFiles 'CompanyOps'),
-    [string]$DataRoot = (Join-Path $env:ProgramData 'CompanyOps'),
+    [string]$PublishRoot,
+    [Parameter(Mandatory)]
+    [string]$InstallRoot,
+    [Parameter(Mandatory)]
+    [string]$DataRoot,
     [string]$HostId = $env:COMPUTERNAME,
     [string[]]$Operators = @(),
     [switch]$Apply,
@@ -10,9 +12,49 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($PublishRoot)) {
+    $PublishRoot = Join-Path $PSScriptRoot '..\artifacts\publish'
+}
+
+function Test-LocalAbsolutePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [System.IO.Path]::IsPathRooted($Path)) {
+        return $false
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($Path)
+    return $root -match '^[A-Za-z]:\\$'
+}
+
+foreach ($selectedPath in @($InstallRoot, $DataRoot)) {
+    if (-not (Test-LocalAbsolutePath $selectedPath)) {
+        throw "CompanyOps 程序和数据目录必须使用本机磁盘绝对路径，不能使用相对路径或 UNC：$selectedPath"
+    }
+}
+
 $publish = [System.IO.Path]::GetFullPath($PublishRoot)
 $install = [System.IO.Path]::GetFullPath($InstallRoot)
 $data = [System.IO.Path]::GetFullPath($DataRoot)
+
+foreach ($selectedPath in @($install, $data)) {
+    if ($selectedPath.TrimEnd('\') -eq [System.IO.Path]::GetPathRoot($selectedPath).TrimEnd('\')) {
+        throw "不能把磁盘根目录作为 CompanyOps 目录：$selectedPath"
+    }
+    $selectedRoot = [System.IO.Path]::GetPathRoot($selectedPath)
+    if (-not (Test-Path -LiteralPath $selectedRoot -PathType Container)) {
+        throw "CompanyOps 目标磁盘不存在：$selectedRoot"
+    }
+}
+
+$installPrefix = $install.TrimEnd('\') + '\'
+$dataPrefix = $data.TrimEnd('\') + '\'
+if ($install -eq $data -or
+    $installPrefix.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $dataPrefix.StartsWith($installPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'CompanyOps 程序目录和数据目录必须相互独立，不能相同或互相嵌套。'
+}
 
 if (-not $Apply) {
     Write-Host '安全预览：未传入 -Apply，不会复制文件或注册服务。'
@@ -68,6 +110,7 @@ $agentSettings = @{
         PipeName = 'CompanyOps.Agent.v1'
         InventoryIntervalSeconds = 30
         EnableMutations = $false
+        AllowedProjectInstallRoots = @()
         AllowedClientSids = @('S-1-5-20')
     }
     Logging = @{ LogLevel = @{ Default = 'Information'; 'Microsoft.Hosting.Lifetime' = 'Information' } }

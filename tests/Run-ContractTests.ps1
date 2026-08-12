@@ -38,7 +38,7 @@ Invoke-TestCase -Name '五个 Schema 文件均为有效 JSON' -Body {
     }
     foreach ($schemaFile in $schemaFiles) {
         $null = Get-Content -LiteralPath $schemaFile.FullName -Raw -Encoding utf8 |
-            ConvertFrom-Json -Depth 100
+            ConvertFrom-Json
     }
 }
 

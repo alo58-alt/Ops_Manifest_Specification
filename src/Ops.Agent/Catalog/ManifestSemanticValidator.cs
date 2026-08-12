@@ -112,13 +112,15 @@ public static class ManifestSemanticValidator
         var artifacts = document["artifacts"]?.AsArray() ?? [];
         AddDuplicateErrors(artifacts, "id", "制品 ID", errors);
         AddDuplicateErrors(artifacts, "fileName", "制品文件名", errors);
+        var payloads = document["componentPayloads"]?.AsArray() ?? [];
+        AddDuplicateErrors(payloads, "componentId", "组件载荷 componentId", errors);
         var artifactIds = artifacts
             .Select(GetId)
             .Where(static value => value is not null)
             .Select(static value => value!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var payloadNode in document["componentPayloads"]?.AsArray() ?? [])
+        foreach (var payloadNode in payloads)
         {
             if (payloadNode is not JsonObject payload)
             {

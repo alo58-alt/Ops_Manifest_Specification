@@ -1,0 +1,40 @@
+{
+  "$schema": "../../spec/v1/schemas/release-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ReleaseManifest",
+  "metadata": {
+    "projectId": "sample-system",
+    "version": "1.0.0",
+    "releaseId": "sample-system-1.0.0-duplicate",
+    "builtAt": "2026-08-12T00:00:00Z"
+  },
+  "target": {
+    "os": "windows",
+    "architecture": "x64",
+    "minAgentVersion": "0.1.0"
+  },
+  "projectManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifacts": [
+    {
+      "id": "package",
+      "fileName": "package.zip",
+      "mediaType": "application/zip",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sizeBytes": 1
+    }
+  ],
+  "componentPayloads": [
+    {
+      "componentId": "api",
+      "entrypoint": "api-main",
+      "artifactId": "package",
+      "path": "api/app.exe"
+    },
+    {
+      "componentId": "api",
+      "entrypoint": "api-secondary",
+      "artifactId": "package",
+      "path": "api/other.exe"
+    }
+  ]
+}

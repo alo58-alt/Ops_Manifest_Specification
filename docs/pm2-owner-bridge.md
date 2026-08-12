@@ -13,22 +13,24 @@ Bridge 没有 `all`、`delete`、`kill` 或任意命令字段，代码也不读�
 
 ## 配置
 
-在 PM2 owner 账号下复制 `appsettings.json`，将以下路径改为真实绝对路径：
+在 PM2 owner 账号下准备独立 `appsettings.json`。下面只表示字段结构；`<InstallRoot>`、`<DataRoot>`、Node 和 PM2 CLI 都必须替换为本机实际选择或探测到的绝对路径。可直接执行[完整操作手册](complete-operations-manual.md)第 15 章的交互式 PowerShell 来生成配置，避免手工转义路径。
 
 ```json
 {
   "Pm2Bridge": {
     "PipeName": "CompanyOps.Pm2Bridge.v1",
-    "ManifestDirectory": "C:\\ProgramData\\CompanyOps\\manifests",
-    "SnapshotDirectory": "C:\\ProgramData\\CompanyOps\\Agent\\pm2-snapshots",
-    "NodeExecutablePath": "C:\\Program Files\\nodejs\\node.exe",
-    "Pm2CliPath": "C:\\Users\\pm2-owner\\AppData\\Roaming\\npm\\node_modules\\pm2\\bin\\pm2",
+    "ManifestDirectory": "<DataRoot>\\manifests",
+    "SnapshotDirectory": "<DataRoot>\\Agent\\pm2-snapshots",
+    "NodeExecutablePath": "<实际 Node.exe 绝对路径>",
+    "Pm2CliPath": "<实际 PM2 JavaScript CLI 绝对路径>",
     "SnapshotIntervalSeconds": 10
   }
 }
 ```
 
-EnvironmentBinding 的 `legacyPm2.ownerSid` 必须等于该账号真实 SID；`snapshotFileName` 只能是单一 JSON 文件名；`controlPipeName` 必须与该 owner Bridge 的 `PipeName` 相同。每个 owner 可以使用不同 Pipe，因此一台主机可以安全迁移多个不同 owner 的遗留 PM2 daemon。
+EnvironmentBinding 的 `legacyPm2.ownerSid` 必须等于该账号真实 SID；`snapshotFileName` 只能是单一 JSON 文件名；`controlPipeName` 必须与该 owner Bridge 的 `PipeName` 相同。设计上每个 owner 使用不同 Pipe、配置和快照文件。
+
+当前 MVP 的 `Pm2SnapshotDirectory` 仍是共享目录，首次安装器尚未建立 per-owner 子目录和文件级 ACL。普通试点只支持一台主机一个 PM2 owner；多 owner 主机必须先补齐 per-owner 快照目录、ACL 和对应自动化测试，不能仅依靠不同 Pipe 宣称已完成隔离。
 
 ## 上线步骤
 
