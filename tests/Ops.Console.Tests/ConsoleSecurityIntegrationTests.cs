@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CompanyOps.Contracts;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -63,6 +65,24 @@ public sealed class ConsoleSecurityIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, postResponse.StatusCode);
     }
 
+    [Fact]
+    public async Task HttpJsonOptions_AcceptStringOnboardingAction()
+    {
+        await using var factory = new OpsConsoleFactory();
+        using var scope = factory.Services.CreateScope();
+        var options = scope.ServiceProvider
+            .GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
+            .Value.SerializerOptions;
+
+        var request = JsonSerializer.Deserialize<ExistingProjectOnboardingRequest>(
+            """{"projectRoot":"D:\\project\\webquizbot","environment":"production","action":"Plan"}""",
+            options);
+
+        Assert.NotNull(request);
+        Assert.Equal(ExistingProjectOnboardingAction.Plan, request.Action);
+        Assert.Contains(options.Converters, converter => converter is JsonStringEnumConverter);
+    }
+
     private sealed class OpsConsoleFactory : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -95,7 +115,10 @@ public sealed class ConsoleSecurityIntegrationTests
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
             var identity = new ClaimsIdentity(
-                [new Claim(ClaimTypes.Name, "DOMAIN\\operator")],
+                [
+                    new Claim(ClaimTypes.Name, "DOMAIN\\operator"),
+                    new Claim(ClaimTypes.PrimarySid, "S-1-5-21-100-200-300-400")
+                ],
                 Scheme.Name,
                 ClaimTypes.Name,
                 ClaimTypes.Role);

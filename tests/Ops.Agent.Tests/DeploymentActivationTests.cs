@@ -34,6 +34,31 @@ public sealed class DeploymentActivationTests
     }
 
     [Fact]
+    public async Task Plan_ReadOnlyPreflightsExistingNativeResource()
+    {
+        using var directory = new TestDirectory();
+        var events = new List<string>();
+        var activator = CreateActivator(events);
+        var request = Request(
+            directory.FullPath,
+            """
+            [{ "id": "api", "kind": "windowsService", "entrypoint": "api-main", "dependsOn": [], "health": [] }]
+            """,
+            """
+            [{ "componentId": "api", "entrypoint": "api-main", "artifactId": "package", "path": "api/Sample.Api.exe" }]
+            """,
+            """
+            [{ "componentId": "api", "nativeName": "Company.Sample.Api" }]
+            """,
+            "[]");
+
+        var result = await activator.PlanAsync(request, CancellationToken.None);
+
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(["capture:api"], events);
+    }
+
+    [Fact]
     public async Task Activate_PreflightsThenSwitchesAndStartsInDependencyOrder()
     {
         using var directory = new TestDirectory();
@@ -81,7 +106,7 @@ public sealed class DeploymentActivationTests
             }]
             """);
 
-        var result = await activator.ActivateAsync(request, CancellationToken.None);
+        var result = await activator.ActivateAsync(request, TestContext.Current.CancellationToken);
 
         Assert.True(result.Success, result.Detail);
         Assert.NotNull(result.Rollback);
@@ -162,6 +187,50 @@ public sealed class DeploymentActivationTests
     }
 
     [Fact]
+    public async Task Activate_UnexpectedAdapterExceptionStillRestoresOldEntrypoint()
+    {
+        using var directory = new TestDirectory();
+        CreatePayload(directory.FullPath, "package", "api/Sample.Api.exe");
+        var events = new List<string>();
+        var activator = CreateActivator(events, throwApplyComponent: "api");
+        var request = Request(
+            directory.FullPath,
+            """
+            [{
+              "id": "api", "kind": "windowsService", "entrypoint": "api-main",
+              "dependsOn": [], "health": []
+            }]
+            """,
+            """
+            [{
+              "componentId": "api", "entrypoint": "api-main", "artifactId": "package",
+              "path": "api/Sample.Api.exe"
+            }]
+            """,
+            """
+            [{ "componentId": "api", "nativeName": "Company.Sample.Api" }]
+            """,
+            "[]");
+
+        var result = await activator.ActivateAsync(request, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("激活异常", result.Detail, StringComparison.Ordinal);
+        Assert.Contains("旧入口恢复成功", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(
+            [
+                "capture:api",
+                "control:Stop:api",
+                "apply:api:",
+                "control:Stop:api",
+                "restore:api",
+                "control:Start:api",
+                "health:api"
+            ],
+            events);
+    }
+
+    [Fact]
     public async Task Plan_RejectsUnknownArgumentPlaceholder()
     {
         using var directory = new TestDirectory();
@@ -190,12 +259,78 @@ public sealed class DeploymentActivationTests
         Assert.Empty(events);
     }
 
+    [Fact]
+    public async Task Activate_MixesServiceAndInteractiveAppWithoutProjectSpecificCode()
+    {
+        using var directory = new TestDirectory();
+        CreatePayload(directory.FullPath, "package", "api/Api.exe");
+        CreatePayload(directory.FullPath, "package", "host/Host.exe");
+        var events = new List<string>();
+        var targets = new List<DeploymentEntrypointTarget>();
+        var activator = CreateActivator(events, capturedTargets: targets, kinds: ["windowsService", "interactiveApp"]);
+        var request = Request(
+            directory.FullPath,
+            """
+            [
+              { "id": "api", "kind": "windowsService", "entrypoint": "api-main", "dependsOn": [], "health": [] },
+              { "id": "host", "kind": "interactiveApp", "entrypoint": "host-main", "dependsOn": ["api"], "health": [] }
+            ]
+            """,
+            """
+            [
+              {
+                "componentId": "api", "entrypoint": "api-main", "artifactId": "package",
+                "path": "api/Api.exe", "workingDirectory": "api",
+                "arguments": ["--data-dir", "${ROOT_DATA}", "--port", "${PORT_API_HTTP}"]
+              },
+              {
+                "componentId": "host", "entrypoint": "host-main", "artifactId": "package",
+                "path": "host/Host.exe", "workingDirectory": "host",
+                "arguments": ["--logs-dir", "${ROOT_LOGS}"]
+              }
+            ]
+            """,
+            """
+            [
+              { "componentId": "api", "nativeName": "Sample.Api" },
+              { "componentId": "host", "nativeName": "interactive-session" }
+            ]
+            """,
+            """
+            [{ "portId": "api-http", "componentId": "api", "protocol": "tcp", "address": "127.0.0.1", "port": 19201 }]
+            """);
+
+        var result = await activator.ActivateAsync(request, CancellationToken.None);
+
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(
+            [
+                "capture:api", "capture:host",
+                "control:Stop:host", "control:Stop:api",
+                "apply:api:19201", "apply:host:",
+                "control:Start:api", "health:api",
+                "control:Start:host", "health:host"
+            ],
+            events);
+        Assert.Equal(
+            ["--data-dir", @"C:\CompanyOpsTests\sample-data", "--port", "19201"],
+            targets.Single(target => target.ComponentId == "api").Arguments);
+        Assert.Equal(
+            ["--logs-dir", @"C:\CompanyOpsTests\sample-logs"],
+            targets.Single(target => target.ComponentId == "host").Arguments);
+    }
+
     private static NativeDeploymentActivator CreateActivator(
         List<string> events,
-        string? failStartComponent = null) =>
+        string? failStartComponent = null,
+        string? throwApplyComponent = null,
+        List<DeploymentEntrypointTarget>? capturedTargets = null,
+        IReadOnlyList<string>? kinds = null) =>
         new(
-            [new FakeEntrypointAdapter(events)],
-            [new FakeControlAdapter(events, failStartComponent)],
+            (kinds ?? ["windowsService"])
+                .Select(kind => new FakeEntrypointAdapter(kind, events, throwApplyComponent, capturedTargets)),
+            (kinds ?? ["windowsService"])
+                .Select(kind => new FakeControlAdapter(kind, events, failStartComponent)),
             new RecordingHealthGate(events));
 
     private static DeploymentActivationRequest Request(
@@ -219,6 +354,11 @@ public sealed class DeploymentActivationTests
         var binding = JsonNode.Parse(
             $$"""
             {
+              "roots": {
+                "install": "C:\\CompanyOpsTests\\sample",
+                "data": "C:\\CompanyOpsTests\\sample-data",
+                "logs": "C:\\CompanyOpsTests\\sample-logs"
+              },
               "componentBindings": {{componentBindings}},
               "portBindings": {{portBindings}}
             }
@@ -233,9 +373,13 @@ public sealed class DeploymentActivationTests
         File.WriteAllText(path, "test binary");
     }
 
-    private sealed class FakeEntrypointAdapter(List<string> events) : IDeploymentEntrypointAdapter
+    private sealed class FakeEntrypointAdapter(
+        string kind,
+        List<string> events,
+        string? throwApplyComponent,
+        List<DeploymentEntrypointTarget>? capturedTargets) : IDeploymentEntrypointAdapter
     {
-        public string Kind => "windowsService";
+        public string Kind => kind;
 
         public Task<DeploymentEntrypointCaptureResult> CaptureAsync(
             DeploymentEntrypointTarget target,
@@ -258,6 +402,12 @@ public sealed class DeploymentActivationTests
             CancellationToken cancellationToken)
         {
             events.Add($"apply:{target.ComponentId}:{(target.BinaryPath.Contains("19201", StringComparison.Ordinal) ? "19201" : string.Empty)}");
+            capturedTargets?.Add(target);
+            if (target.ComponentId == throwApplyComponent)
+            {
+                throw new InvalidOperationException("injected adapter exception");
+            }
+
             return Task.FromResult(new AdapterExecutionResult(true, "applied"));
         }
 
@@ -270,11 +420,14 @@ public sealed class DeploymentActivationTests
         }
     }
 
-    private sealed class FakeControlAdapter(List<string> events, string? failStartComponent) : IComponentControlAdapter
+    private sealed class FakeControlAdapter(
+        string kind,
+        List<string> events,
+        string? failStartComponent) : IComponentControlAdapter
     {
         private bool _failed;
 
-        public string Kind => "windowsService";
+        public string Kind => kind;
 
         public Task<AdapterExecutionResult> ExecuteAsync(
             ComponentControlTarget target,

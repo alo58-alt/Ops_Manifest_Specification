@@ -19,7 +19,14 @@ public sealed class ProjectRegistryTests
             [new InventorySection(
                 "windows-services",
                 InventorySourceStatus.Available,
-                [new InventoryItem("Company.Sample.Api", "Sample API", "Running", new Dictionary<string, string?>())])]);
+                [new InventoryItem(
+                    "Company.Sample.Api",
+                    "Sample API",
+                    "Running",
+                    new Dictionary<string, string?>
+                    {
+                        ["binaryPath"] = @"C:\CompanyOps\Apps\sample\service.exe"
+                    })])]);
 
         var snapshot = await registry.BuildAsync(catalog, inventory, CancellationToken.None);
 
@@ -48,6 +55,77 @@ public sealed class ProjectRegistryTests
     }
 
     [Fact]
+    public async Task DeclaredExistingService_UsesBindingRevisionAndRequiresProjectOwnedImagePath()
+    {
+        using var directory = new TestDirectory();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var projectPath = Path.Combine(directory.FullPath, "project.json");
+        var bindingPath = Path.Combine(directory.FullPath, "binding.json");
+        await File.WriteAllTextAsync(projectPath, """
+            {
+              "manifestKind": "ProjectManifest",
+              "metadata": { "id": "sample", "displayName": "Sample" },
+              "components": [
+                { "id": "api", "displayName": "API", "kind": "windowsService" }
+              ]
+            }
+            """, cancellationToken);
+        await File.WriteAllTextAsync(bindingPath, """
+            {
+              "manifestKind": "EnvironmentBinding",
+              "metadata": {
+                "projectId": "sample", "environment": "test", "hostId": "TEST-HOST", "revision": 7
+              },
+              "roots": { "install": "D:\\project\\sample" },
+              "componentBindings": [
+                { "componentId": "api", "nativeName": "Company.Sample.Api" }
+              ]
+            }
+            """, cancellationToken);
+        var catalog = new ManifestCatalogSnapshot(
+            DateTimeOffset.UtcNow,
+            [
+                new ManifestCatalogEntry(projectPath, "ProjectManifest", "sample", true, DateTimeOffset.UtcNow, []),
+                new ManifestCatalogEntry(bindingPath, "EnvironmentBinding", "sample", true, DateTimeOffset.UtcNow, [])
+            ]);
+        var registry = CreateRegistry(directory.FullPath);
+
+        var owned = await registry.BuildAsync(
+            catalog,
+            new InventorySnapshot("TEST-HOST", DateTimeOffset.UtcNow, [new InventorySection(
+                "windows-services",
+                InventorySourceStatus.Available,
+                [new InventoryItem(
+                    "Company.Sample.Api",
+                    "API",
+                    "Running",
+                    new Dictionary<string, string?> { ["binaryPath"] = @"D:\project\sample\tools\nssm.exe" })])]),
+            cancellationToken);
+
+        var ownedProject = Assert.Single(owned.Projects);
+        Assert.Equal(ProjectBindingStatus.Declared, ownedProject.Status);
+        Assert.Equal(7, ownedProject.Generation);
+        Assert.Equal("running", Assert.Single(ownedProject.Components).RuntimeState);
+        Assert.Equal(ComponentOwnershipStatus.Owned, Assert.Single(ownedProject.Components).Ownership);
+
+        var conflict = await registry.BuildAsync(
+            catalog,
+            new InventorySnapshot("TEST-HOST", DateTimeOffset.UtcNow, [new InventorySection(
+                "windows-services",
+                InventorySourceStatus.Available,
+                [new InventoryItem(
+                    "Company.Sample.Api",
+                    "API",
+                    "Running",
+                    new Dictionary<string, string?> { ["binaryPath"] = @"D:\other\nssm.exe" })])]),
+            cancellationToken);
+
+        var conflictProject = Assert.Single(conflict.Projects);
+        Assert.Equal(ProjectBindingStatus.Conflict, conflictProject.Status);
+        Assert.Equal(ComponentOwnershipStatus.Conflict, Assert.Single(conflictProject.Components).Ownership);
+    }
+
+    [Fact]
     public async Task TwoProjectsClaimingSameNativeService_BothFailClosedAsConflict()
     {
         using var directory = new TestDirectory();
@@ -55,6 +133,9 @@ public sealed class ProjectRegistryTests
         var entries = new List<ManifestCatalogEntry>();
         foreach (var projectId in new[] { "sample-a", "sample-b" })
         {
+            var declaredInstallRoot = projectId == "sample-a"
+                ? @"C:\CompanyOps\Apps\shared"
+                : @"C:\CompanyOps\Apps\shared\nested";
             var projectPath = Path.Combine(directory.FullPath, $"{projectId}.project.json");
             await File.WriteAllTextAsync(
                 projectPath,
@@ -84,7 +165,7 @@ public sealed class ProjectRegistryTests
                   "metadata": {
                     "projectId": "{{projectId}}", "environment": "test", "hostId": "TEST-HOST"
                   },
-                  "roots": { "install": "C:\\CompanyOps\\Apps\\shared" },
+                  "roots": { "install": {{System.Text.Json.JsonSerializer.Serialize(declaredInstallRoot)}} },
                   "componentBindings": [
                     { "componentId": "api", "nativeName": "Company.Shared.Api" }
                   ]
@@ -145,6 +226,7 @@ public sealed class ProjectRegistryTests
                 {
                   "manifestKind": "EnvironmentBinding",
                   "metadata": { "projectId": "sample", "environment": "test", "hostId": "TEST-HOST" },
+                  "roots": { "install": "C:\\CompanyOps\\Apps\\sample" },
                   "componentBindings": [
                     { "componentId": "api", "nativeName": "Company.Sample.Api" }
                   ]

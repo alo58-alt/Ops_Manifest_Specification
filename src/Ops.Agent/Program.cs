@@ -6,7 +6,15 @@ using CompanyOps.Agent.Pipe;
 using CompanyOps.Agent.Projects;
 using CompanyOps.Agent.Operations;
 using CompanyOps.Agent.Deployment;
+using CompanyOps.Agent.Onboarding;
+using CompanyOps.Agent.Updates;
 using CompanyOps.Contracts;
+
+if (GitCredentialAskPass.IsRequested())
+{
+    Environment.ExitCode = GitCredentialAskPass.Run(args);
+    return;
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(
@@ -40,6 +48,7 @@ builder.Services.AddSingleton<InventoryCoordinator>();
 builder.Services.AddSingleton<IProjectRegistry, ProjectRegistry>();
 builder.Services.AddSingleton<OperationGate>();
 builder.Services.AddSingleton<OperationCoordinator>();
+builder.Services.AddSingleton<IOperationSnapshotRefresher, OperationSnapshotRefresher>();
 builder.Services.AddSingleton<DeclaredHealthGate>();
 builder.Services.AddSingleton<IComponentHealthGate>(
     static provider => provider.GetRequiredService<DeclaredHealthGate>());
@@ -51,8 +60,14 @@ builder.Services.AddSingleton<IPortRegistryStore, SqlitePortRegistryStore>();
 builder.Services.AddSingleton<IDeploymentEntrypointAdapter, WindowsServiceDeploymentEntrypointAdapter>();
 builder.Services.AddSingleton<IDeploymentActivator, NativeDeploymentActivator>();
 builder.Services.AddSingleton<DeploymentEngine>();
+builder.Services.AddSingleton<ExistingProjectOnboardingService>();
+builder.Services.AddSingleton<ProjectDirectoryBrowser>();
+builder.Services.AddSingleton<IGitCredentialStore, GitCredentialStore>();
+builder.Services.AddSingleton<IGitCommandRunner, GitCommandRunner>();
+builder.Services.AddSingleton<GitUpdateService>();
 builder.Services.AddSingleton<FixedCommandRunner>();
 builder.Services.AddSingleton<IPm2OwnerControlBridge, NamedPipePm2OwnerControlBridge>();
+builder.Services.AddSingleton<IInteractiveSessionControlBridge, NamedPipeInteractiveSessionControlBridge>();
 builder.Services.AddSingleton<IComponentControlAdapter, WindowsServiceControlAdapter>();
 builder.Services.AddSingleton<IComponentControlAdapter, ScheduledTaskControlAdapter>();
 builder.Services.AddSingleton<IComponentControlAdapter>(
@@ -60,13 +75,19 @@ builder.Services.AddSingleton<IComponentControlAdapter>(
 builder.Services.AddSingleton<IComponentControlAdapter>(
     static provider => new IisSiteControlAdapter(provider.GetRequiredService<FixedCommandRunner>(), "staticSite"));
 builder.Services.AddSingleton<IComponentControlAdapter, Pm2LegacyControlAdapter>();
+builder.Services.AddSingleton<IComponentControlAdapter, InteractiveAppControlAdapter>();
 builder.Services.AddSingleton<IInventorySource, WindowsServiceInventorySource>();
 builder.Services.AddSingleton<IInventorySource, NetworkPortInventorySource>();
 builder.Services.AddSingleton<IInventorySource, IisInventorySource>();
 builder.Services.AddSingleton<IInventorySource, ScheduledTaskInventorySource>();
 builder.Services.AddSingleton<IInventorySource, Pm2InventorySource>();
+builder.Services.AddSingleton<IInventorySource, InteractiveAppInventorySource>();
 builder.Services.AddSingleton<ILegacyPm2ClaimProvider, LegacyPm2ClaimProvider>();
 builder.Services.AddSingleton<Pm2SnapshotReader>();
+builder.Services.AddSingleton<IInteractiveSessionClaimProvider, InteractiveSessionClaimProvider>();
+builder.Services.AddSingleton<InteractiveSnapshotReader>();
+builder.Services.AddSingleton<InteractiveEntrypointStateStore>();
+builder.Services.AddSingleton<IDeploymentEntrypointAdapter, InteractiveAppDeploymentEntrypointAdapter>();
 builder.Services.AddSingleton<NamedPipeSecurityFactory>();
 builder.Services.AddHostedService<AgentWorker>();
 builder.Services.AddHostedService<NamedPipeServer>();

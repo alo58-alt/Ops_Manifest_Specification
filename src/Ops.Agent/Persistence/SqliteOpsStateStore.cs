@@ -41,7 +41,8 @@ public sealed class SqliteOpsStateStore(
                 category TEXT NOT NULL,
                 action TEXT NOT NULL,
                 outcome TEXT NOT NULL,
-                detail TEXT NULL
+                detail TEXT NULL,
+                data_json TEXT NULL
             );
 
             CREATE INDEX IF NOT EXISTS ix_audit_events_occurred_at
@@ -49,6 +50,7 @@ public sealed class SqliteOpsStateStore(
             """;
         command.Parameters.AddWithValue("$applied_at", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await EnsureAuditDataColumnAsync(connection, cancellationToken);
     }
 
     public async Task SaveInventorySnapshotAsync(
@@ -103,14 +105,16 @@ public sealed class SqliteOpsStateStore(
                 category,
                 action,
                 outcome,
-                detail)
+                detail,
+                data_json)
             VALUES (
                 $event_id,
                 $occurred_at,
                 $category,
                 $action,
                 $outcome,
-                $detail);
+                $detail,
+                $data_json);
             """;
         command.Parameters.AddWithValue("$event_id", auditEvent.EventId);
         command.Parameters.AddWithValue("$occurred_at", auditEvent.OccurredAt.ToString("O"));
@@ -120,6 +124,9 @@ public sealed class SqliteOpsStateStore(
         command.Parameters.AddWithValue(
             "$detail",
             auditEvent.Detail is null ? DBNull.Value : auditEvent.Detail);
+        command.Parameters.AddWithValue(
+            "$data_json",
+            auditEvent.Data is null ? DBNull.Value : auditEvent.Data.Value.GetRawText());
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -134,7 +141,7 @@ public sealed class SqliteOpsStateStore(
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT event_id, occurred_at, category, action, outcome, detail
+            SELECT event_id, occurred_at, category, action, outcome, detail, data_json
             FROM audit_events
             ORDER BY occurred_at DESC
             LIMIT $limit;
@@ -153,10 +160,41 @@ public sealed class SqliteOpsStateStore(
                     reader.GetString(2),
                     reader.GetString(3),
                     reader.GetString(4),
-                    reader.IsDBNull(5) ? null : reader.GetString(5)));
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6)
+                        ? null
+                        : JsonSerializer.Deserialize<JsonElement>(reader.GetString(6))));
         }
 
         return events;
+    }
+
+    private static async Task EnsureAuditDataColumnAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = "PRAGMA table_info(audit_events);";
+        var hasDataColumn = false;
+        await using (var reader = await inspect.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(reader.GetString(1), "data_json", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasDataColumn = true;
+                    break;
+                }
+            }
+        }
+        if (hasDataColumn)
+        {
+            return;
+        }
+
+        await using var migrate = connection.CreateCommand();
+        migrate.CommandText = "ALTER TABLE audit_events ADD COLUMN data_json TEXT NULL;";
+        await migrate.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)

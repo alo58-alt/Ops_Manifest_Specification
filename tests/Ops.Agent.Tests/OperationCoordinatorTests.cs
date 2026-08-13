@@ -90,7 +90,8 @@ public sealed class OperationCoordinatorTests
             StateDirectory = directory.FullPath,
             PipeName = "test",
             InventoryIntervalSeconds = 30,
-            EnableMutations = enableMutations
+            EnableMutations = enableMutations,
+            EnableExistingServiceOperations = false
         });
         var resolver = new OpsPathResolver(options);
         var jsonOptions = TestDirectory.CreateJsonOptions();
@@ -144,8 +145,14 @@ public sealed class OperationCoordinatorTests
             new OperationGate(),
             [new RecordingAdapter("windowsService", calls), new RecordingAdapter("staticSite", calls)],
             new AlwaysHealthyGate(),
+            new NoopSnapshotRefresher(),
             options,
             jsonOptions);
+    }
+
+    private sealed class NoopSnapshotRefresher : IOperationSnapshotRefresher
+    {
+        public Task RefreshAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class RecordingAdapter(

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-task",
+    "displayName": "请替换项目名称",
+    "description": "请替换项目说明",
+    "owners": [
+      "change-me-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "job",
+      "displayName": "计划任务",
+      "kind": "scheduledTask",
+      "entrypoint": "job-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "fileHeartbeat",
+          "path": "health/job-success.json",
+          "maxAgeSeconds": 900
+        }
+      ],
+      "task": {
+        "trigger": {
+          "kind": "interval",
+          "everyMinutes": 5
+        },
+        "executionTimeLimitSeconds": 240
+      }
+    }
+  ],
+  "ports": [],
+  "configuration": [],
+  "dataDirectories": [
+    {
+      "id": "job-state",
+      "componentId": "job",
+      "purpose": "计划任务心跳和运行状态",
+      "backupTier": "none"
+    }
+  ],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

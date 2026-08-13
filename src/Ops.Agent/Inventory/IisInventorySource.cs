@@ -50,6 +50,13 @@ public sealed class IisInventorySource : IInventorySource
                     .Select(
                         static binding =>
                             $"{(string?)binding.Attribute("protocol")}:{(string?)binding.Attribute("bindingInformation")}"));
+            var physicalPath = site
+                .Elements("application")
+                .Where(static application => (string?)application.Attribute("path") == "/")
+                .Elements("virtualDirectory")
+                .Where(static directory => (string?)directory.Attribute("path") == "/")
+                .Select(static directory => (string?)directory.Attribute("physicalPath"))
+                .SingleOrDefault();
             items.Add(
                 new InventoryItem(
                     $"site:{name}",
@@ -59,7 +66,8 @@ public sealed class IisInventorySource : IInventorySource
                     {
                         ["resourceType"] = "site",
                         ["siteId"] = (string?)site.Attribute("id"),
-                        ["bindings"] = bindings
+                        ["bindings"] = bindings,
+                        ["physicalPath"] = physicalPath
                     }));
         }
 

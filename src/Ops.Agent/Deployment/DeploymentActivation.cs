@@ -2,8 +2,10 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using CompanyOps.Agent.Inventory;
 using CompanyOps.Agent.Operations;
 using CompanyOps.Contracts;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace CompanyOps.Agent.Deployment;
@@ -46,14 +48,25 @@ public sealed record DeploymentEntrypointTarget(
     string NativeName,
     string ExecutablePath,
     string BinaryPath,
-    string? WorkingDirectory);
+    string? WorkingDirectory,
+    IReadOnlyList<string> Arguments);
 
 public sealed record DeploymentEntrypointSnapshot(
     string ComponentId,
     string Kind,
     string NativeName,
     string BinaryPath,
-    bool WasRunning);
+    bool WasRunning,
+    string? ProjectId = null,
+    string? Environment = null,
+    string? ExecutablePath = null,
+    string? WorkingDirectory = null,
+    IReadOnlyList<string>? Arguments = null,
+    bool HadManagedState = false,
+    string? HostingAdapter = null,
+    string? HostApplication = null,
+    string? HostWorkingDirectory = null,
+    string? HostArguments = null);
 
 public sealed record DeploymentEntrypointCaptureResult(
     bool Success,
@@ -98,18 +111,49 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
         _healthGate = healthGate;
     }
 
-    public Task<DeploymentActivationResult> PlanAsync(
+    public async Task<DeploymentActivationResult> PlanAsync(
         DeploymentActivationRequest request,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var plan = BuildPlan(request, requirePayloadsOnDisk: false);
-        return Task.FromResult(plan.Error is null
-            ? new DeploymentActivationResult(
-                true,
-                $"{plan.Items.Count} 个原生组件具备受控激活能力",
-                plan.Items.Select(static item => $"计划切换 {item.ComponentId} ({item.Kind})").ToArray())
-            : new DeploymentActivationResult(false, plan.Error.Value.Detail));
+        if (plan.Error is not null)
+        {
+            return new DeploymentActivationResult(false, plan.Error.Value.Detail);
+        }
+
+        var steps = new List<string>();
+        foreach (var item in plan.Items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DeploymentEntrypointCaptureResult capture;
+            try
+            {
+                capture = await item.EntrypointAdapter.CaptureAsync(item.Target, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return new DeploymentActivationResult(
+                    false,
+                    $"组件 {item.ComponentId} 只读预检异常 {exception.GetType().Name}：{exception.Message}",
+                    steps);
+            }
+
+            if (!capture.Success || capture.Snapshot is null)
+            {
+                return new DeploymentActivationResult(
+                    false,
+                    $"组件 {item.ComponentId} 只读预检失败：{capture.Detail ?? "无法读取当前入口"}",
+                    steps);
+            }
+
+            steps.Add($"组件 {item.ComponentId} 原生资源存在，当前入口和运行状态可读取");
+        }
+
+        return new DeploymentActivationResult(
+            true,
+            $"{plan.Items.Count} 个原生组件已通过只读预检并具备受控激活能力",
+            steps);
     }
 
     public async Task<DeploymentActivationResult> ActivateAsync(
@@ -217,11 +261,36 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
         catch (OperationCanceledException)
         {
             using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var restored = await rollback.RestoreAsync(cleanupTimeout.Token);
+            var restored = await RestoreAfterUnhandledFailureAsync(rollback, cleanupTimeout.Token);
             return new DeploymentActivationResult(
                 false,
                 $"激活已取消；旧入口恢复{(restored.Success ? "成功" : "失败")}：{restored.Detail}",
                 steps);
+        }
+        catch (Exception exception)
+        {
+            using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var restored = await RestoreAfterUnhandledFailureAsync(rollback, cleanupTimeout.Token);
+            return new DeploymentActivationResult(
+                false,
+                $"激活异常 {exception.GetType().Name}：{exception.Message}；旧入口恢复{(restored.Success ? "成功" : "失败")}：{restored.Detail}",
+                steps);
+        }
+    }
+
+    private static async Task<DeploymentActivationResult> RestoreAfterUnhandledFailureAsync(
+        IDeploymentActivationRollback rollback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await rollback.RestoreAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return new DeploymentActivationResult(
+                false,
+                $"恢复过程异常 {exception.GetType().Name}：{exception.Message}");
         }
     }
 
@@ -267,7 +336,10 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             return ActivationPlan.Fail("dependency_invalid", order.Error);
         }
 
-        var portValues = BuildPortPlaceholders(request.Binding);
+        var argumentValues = BuildArgumentPlaceholders(request.Binding);
+        var installRoot = request.Binding["roots"]?["install"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(installRoot) || !Path.IsPathFullyQualified(installRoot))
+            return ActivationPlan.Fail("install_root_invalid", "EnvironmentBinding 缺少有效的安装根目录");
         var items = new List<ActivationItem>();
         foreach (var componentId in order.ComponentIds)
         {
@@ -330,7 +402,7 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             var arguments = new List<string>();
             foreach (var argumentNode in payload["arguments"]?.AsArray() ?? [])
             {
-                var resolved = ResolveArgument(argumentNode!.GetValue<string>(), portValues);
+                var resolved = ResolveArgument(argumentNode!.GetValue<string>(), argumentValues);
                 if (resolved is null)
                 {
                     return ActivationPlan.Fail(
@@ -351,7 +423,8 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 nativeName,
                 executablePath,
                 binaryPath,
-                workingDirectory);
+                workingDirectory,
+                arguments);
             items.Add(new ActivationItem(
                 componentId,
                 kind,
@@ -364,6 +437,7 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                     componentId,
                     kind,
                     nativeName,
+                    installRoot,
                     null)));
         }
 
@@ -467,9 +541,19 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             : new TopologicalResult([], "组件依赖缺失或形成环");
     }
 
-    private static IReadOnlyDictionary<string, string> BuildPortPlaceholders(JsonObject binding)
+    private static IReadOnlyDictionary<string, string> BuildArgumentPlaceholders(JsonObject binding)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (property, token) in new[]
+        {
+            ("install", "ROOT_INSTALL"),
+            ("data", "ROOT_DATA"),
+            ("logs", "ROOT_LOGS")
+        })
+        {
+            if (binding["roots"]?[property]?.GetValue<string>() is { } value)
+                result[token] = value;
+        }
         foreach (var item in binding["portBindings"]?.AsArray().OfType<JsonObject>() ?? [])
         {
             var portId = item["portId"]?.GetValue<string>();
@@ -569,27 +653,30 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             var success = true;
             foreach (var item in items.Reverse())
             {
-                var stopped = await item.ControlAdapter.ExecuteAsync(
-                    item.ControlTarget,
-                    ComponentOperationAction.Stop,
-                    cancellationToken);
+                var stopped = await ExecuteRestoreStepAsync(
+                    () => item.ControlAdapter.ExecuteAsync(
+                        item.ControlTarget,
+                        ComponentOperationAction.Stop,
+                        cancellationToken));
                 success &= stopped.Success;
                 steps.Add($"恢复前停止 {item.ComponentId}：{stopped.Detail}");
             }
 
             foreach (var item in items.Reverse())
             {
-                var restored = await item.EntrypointAdapter.RestoreAsync(captures[item.ComponentId], cancellationToken);
+                var restored = await ExecuteRestoreStepAsync(
+                    () => item.EntrypointAdapter.RestoreAsync(captures[item.ComponentId], cancellationToken));
                 success &= restored.Success;
                 steps.Add($"恢复 {item.ComponentId} 旧入口：{restored.Detail}");
             }
 
             foreach (var item in items.Where(item => captures[item.ComponentId].WasRunning))
             {
-                var started = await item.ControlAdapter.ExecuteAsync(
-                    item.ControlTarget,
-                    ComponentOperationAction.Start,
-                    cancellationToken);
+                var started = await ExecuteRestoreStepAsync(
+                    () => item.ControlAdapter.ExecuteAsync(
+                        item.ControlTarget,
+                        ComponentOperationAction.Start,
+                        cancellationToken));
                 success &= started.Success;
                 steps.Add($"恢复启动 {item.ComponentId}：{started.Detail}");
                 if (started.Success)
@@ -606,6 +693,21 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 steps);
         }
 
+        private static async Task<AdapterExecutionResult> ExecuteRestoreStepAsync(
+            Func<Task<AdapterExecutionResult>> operation)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (Exception exception)
+            {
+                return new AdapterExecutionResult(
+                    false,
+                    $"恢复步骤异常 {exception.GetType().Name}：{exception.Message}");
+            }
+        }
+
         private async Task<HealthGateResult> WaitForRestoreHealthAsync(
             string componentId,
             CancellationToken cancellationToken)
@@ -618,7 +720,16 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             HealthGateResult? last = null;
             do
             {
-                last = await healthGate.ProbeAsync(projectManifest, binding, componentId, cancellationToken);
+                try
+                {
+                    last = await healthGate.ProbeAsync(projectManifest, binding, componentId, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    return new HealthGateResult(
+                        false,
+                        $"恢复健康探针异常 {exception.GetType().Name}：{exception.Message}");
+                }
                 if (last.Success)
                 {
                     return last;
@@ -641,6 +752,118 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
     }
 }
 
+public sealed class InteractiveAppDeploymentEntrypointAdapter(
+    InteractiveEntrypointStateStore entrypoints,
+    IInteractiveSessionClaimProvider claims,
+    InteractiveSnapshotReader snapshots) : IDeploymentEntrypointAdapter
+{
+    public string Kind => "interactiveApp";
+
+    public async Task<DeploymentEntrypointCaptureResult> CaptureAsync(
+        DeploymentEntrypointTarget target,
+        CancellationToken cancellationToken)
+    {
+        var matches = (await claims.GetClaimsAsync(cancellationToken)).Where(claim =>
+            claim.ProjectId == target.ProjectId && claim.Environment == target.Environment &&
+            claim.ComponentId == target.ComponentId && claim.BindingError is null).ToArray();
+        if (matches.Length != 1)
+            return new(false, Detail: "交互程序当前入口声明不唯一或不完整");
+        var claim = matches[0];
+        if (claim.ExpectedExecutable is null || claim.ExpectedWorkingDirectory is null)
+            return new(false, Detail: "交互程序当前入口路径不完整");
+        if (!File.Exists(claim.ExpectedExecutable) || !Directory.Exists(claim.ExpectedWorkingDirectory))
+            return new(false, Detail: "交互程序当前 EXE 或工作目录不存在");
+
+        var managed = await entrypoints.ReadAsync(
+            target.ProjectId,
+            target.Environment,
+            target.ComponentId,
+            cancellationToken);
+        if (managed.Exists && managed.State is null)
+            return new(false, Detail: managed.Error ?? "交互程序当前激活入口状态无效");
+
+        var read = await snapshots.ReadAsync(claim, cancellationToken);
+        var processMatches = read.Snapshot?.Processes.Where(process =>
+            process.ProjectId == target.ProjectId && process.Environment == target.Environment &&
+            process.ComponentId == target.ComponentId && process.State == "running" &&
+            string.Equals(process.Executable, claim.ExpectedExecutable, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(process.WorkingDirectory, claim.ExpectedWorkingDirectory, StringComparison.OrdinalIgnoreCase) &&
+            process.Arguments.SequenceEqual(claim.ExpectedArguments, StringComparer.Ordinal)).ToArray() ?? [];
+        if (processMatches.Length > 1)
+            return new(false, Detail: "交互程序当前运行进程不唯一");
+
+        return new(
+            true,
+            new DeploymentEntrypointSnapshot(
+                target.ComponentId,
+                target.Kind,
+                target.NativeName,
+                WindowsCommandLine.Build(claim.ExpectedExecutable, claim.ExpectedArguments),
+                processMatches.Length == 1,
+                target.ProjectId,
+                target.Environment,
+                claim.ExpectedExecutable,
+                claim.ExpectedWorkingDirectory,
+                claim.ExpectedArguments,
+                managed.Exists),
+            "交互程序当前入口、会话归属和运行状态已读取");
+    }
+
+    public async Task<AdapterExecutionResult> ApplyAsync(
+        DeploymentEntrypointTarget target,
+        DeploymentEntrypointSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(target.ExecutablePath) ||
+            target.WorkingDirectory is null || !Directory.Exists(target.WorkingDirectory))
+            return new(false, "交互程序新 EXE 或工作目录不存在");
+        await entrypoints.WriteAsync(
+            new InteractiveEntrypointState(
+                InteractiveSessionProtocol.EntrypointStateVersion,
+                target.ProjectId,
+                target.Environment,
+                target.ComponentId,
+                target.ExecutablePath,
+                target.WorkingDirectory,
+                target.Arguments,
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+        return new(true, "交互程序当前激活入口已原子切换");
+    }
+
+    public async Task<AdapterExecutionResult> RestoreAsync(
+        DeploymentEntrypointSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.ProjectId is null || snapshot.Environment is null ||
+            snapshot.ExecutablePath is null || snapshot.WorkingDirectory is null || snapshot.Arguments is null)
+            return new(false, "交互程序旧入口快照不完整");
+        if (snapshot.HadManagedState)
+        {
+            await entrypoints.WriteAsync(
+                new InteractiveEntrypointState(
+                    InteractiveSessionProtocol.EntrypointStateVersion,
+                    snapshot.ProjectId,
+                    snapshot.Environment,
+                    snapshot.ComponentId,
+                    snapshot.ExecutablePath,
+                    snapshot.WorkingDirectory,
+                    snapshot.Arguments,
+                    DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        else
+        {
+            await entrypoints.DeleteAsync(
+                snapshot.ProjectId,
+                snapshot.Environment,
+                snapshot.ComponentId,
+                cancellationToken);
+        }
+        return new(true, "交互程序旧入口状态已恢复");
+    }
+}
+
 public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntrypointAdapter
 {
     public string Kind => "windowsService";
@@ -655,34 +878,45 @@ public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntry
             return Task.FromResult(new DeploymentEntrypointCaptureResult(false, Detail: "SCM 目标无效或当前不是 Windows"));
         }
 
-        var matches = System.ServiceProcess.ServiceController.GetServices()
-            .Where(service => string.Equals(service.ServiceName, target.NativeName, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        if (matches.Length != 1)
-        {
-            foreach (var match in matches)
-            {
-                match.Dispose();
-            }
-
-            return Task.FromResult(new DeploymentEntrypointCaptureResult(
-                false,
-                Detail: $"SCM 精确名称匹配数量为 {matches.Length}"));
-        }
-
-        using var service = matches[0];
-        service.Refresh();
-        if (service.Status is not (System.ServiceProcess.ServiceControllerStatus.Running or
-            System.ServiceProcess.ServiceControllerStatus.Stopped))
-        {
-            return Task.FromResult(new DeploymentEntrypointCaptureResult(
-                false,
-                Detail: $"SCM 当前状态 {service.Status} 不允许入口迁移"));
-        }
-
+        var services = System.ServiceProcess.ServiceController.GetServices();
         try
         {
+            var matches = services
+                .Where(service => string.Equals(service.ServiceName, target.NativeName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (matches.Length != 1)
+            {
+                return Task.FromResult(new DeploymentEntrypointCaptureResult(
+                    false,
+                    Detail: $"SCM 精确名称匹配数量为 {matches.Length}"));
+            }
+
+            var service = matches[0];
+            service.Refresh();
+            if (service.Status is not (System.ServiceProcess.ServiceControllerStatus.Running or
+                System.ServiceProcess.ServiceControllerStatus.Stopped))
+            {
+                return Task.FromResult(new DeploymentEntrypointCaptureResult(
+                    false,
+                    Detail: $"SCM 当前状态 {service.Status} 不允许入口迁移"));
+            }
+
             var binaryPath = WindowsServiceConfiguration.QueryBinaryPath(target.NativeName);
+            var hostExecutable = WindowsCommandLine.ExtractExecutable(binaryPath);
+            var isNssm = string.Equals(
+                Path.GetFileName(hostExecutable),
+                "nssm.exe",
+                StringComparison.OrdinalIgnoreCase);
+            var nssm = isNssm ? NssmServiceConfiguration.Query(target.NativeName) : null;
+            if (isNssm && nssm is null)
+                return Task.FromResult(new DeploymentEntrypointCaptureResult(
+                    false,
+                    Detail: "SCM 使用 NSSM，但 Parameters 入口配置不存在"));
+            if (nssm is not null &&
+                (string.IsNullOrWhiteSpace(nssm.Application) || string.IsNullOrWhiteSpace(nssm.AppDirectory)))
+                return Task.FromResult(new DeploymentEntrypointCaptureResult(
+                    false,
+                    Detail: "NSSM Application 或 AppDirectory 为空"));
             return Task.FromResult(new DeploymentEntrypointCaptureResult(
                 true,
                 new DeploymentEntrypointSnapshot(
@@ -690,12 +924,24 @@ public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntry
                     target.Kind,
                     target.NativeName,
                     binaryPath,
-                    service.Status == System.ServiceProcess.ServiceControllerStatus.Running),
-                "SCM 当前入口读取成功"));
+                    service.Status == System.ServiceProcess.ServiceControllerStatus.Running,
+                    HostingAdapter: nssm is null ? "scmImagePath" : "nssmApplication",
+                    HostApplication: nssm?.Application,
+                    HostWorkingDirectory: nssm?.AppDirectory,
+                    HostArguments: nssm?.AppParameters),
+                nssm is null ? "SCM 当前入口读取成功" : "SCM/NSSM 当前入口读取成功"));
         }
-        catch (Win32Exception exception)
+        catch (Exception exception) when (exception is Win32Exception or IOException or
+            UnauthorizedAccessException or System.Security.SecurityException)
         {
             return Task.FromResult(new DeploymentEntrypointCaptureResult(false, Detail: exception.Message));
+        }
+        finally
+        {
+            foreach (var service in services)
+            {
+                service.Dispose();
+            }
         }
     }
 
@@ -711,7 +957,14 @@ public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntry
             return Task.FromResult(new AdapterExecutionResult(false, "SCM 目标变化或新入口文件不存在"));
         }
 
-        return ChangeAsync(target.NativeName, target.BinaryPath, "SCM 新入口已写入");
+        return snapshot.HostingAdapter == "nssmApplication"
+            ? ChangeNssmAsync(
+                target.NativeName,
+                target.ExecutablePath,
+                target.WorkingDirectory ?? Path.GetDirectoryName(target.ExecutablePath)!,
+                WindowsCommandLine.BuildArguments(target.Arguments),
+                "NSSM 新应用入口已写入")
+            : ChangeScmAsync(target.NativeName, target.BinaryPath, "SCM 新入口已写入");
     }
 
     public Task<AdapterExecutionResult> RestoreAsync(
@@ -719,10 +972,21 @@ public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntry
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ChangeAsync(snapshot.NativeName, snapshot.BinaryPath, "SCM 旧入口已恢复");
+        if (snapshot.HostingAdapter == "nssmApplication")
+        {
+            if (snapshot.HostApplication is null || snapshot.HostWorkingDirectory is null)
+                return Task.FromResult(new AdapterExecutionResult(false, "NSSM 旧入口快照不完整"));
+            return ChangeNssmAsync(
+                snapshot.NativeName,
+                snapshot.HostApplication,
+                snapshot.HostWorkingDirectory,
+                snapshot.HostArguments ?? string.Empty,
+                "NSSM 旧应用入口已恢复");
+        }
+        return ChangeScmAsync(snapshot.NativeName, snapshot.BinaryPath, "SCM 旧入口已恢复");
     }
 
-    private static Task<AdapterExecutionResult> ChangeAsync(string serviceName, string binaryPath, string detail)
+    private static Task<AdapterExecutionResult> ChangeScmAsync(string serviceName, string binaryPath, string detail)
     {
         try
         {
@@ -738,9 +1002,37 @@ public sealed class WindowsServiceDeploymentEntrypointAdapter : IDeploymentEntry
         }
     }
 
+    private static Task<AdapterExecutionResult> ChangeNssmAsync(
+        string serviceName,
+        string application,
+        string workingDirectory,
+        string arguments,
+        string detail)
+    {
+        try
+        {
+            NssmServiceConfiguration.Change(serviceName, application, workingDirectory, arguments);
+            var actual = NssmServiceConfiguration.Query(serviceName);
+            return Task.FromResult(actual is not null &&
+                string.Equals(actual.Application, application, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    Path.TrimEndingDirectorySeparator(actual.AppDirectory),
+                    Path.TrimEndingDirectorySeparator(workingDirectory),
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(actual.AppParameters ?? string.Empty, arguments, StringComparison.Ordinal)
+                ? new AdapterExecutionResult(true, detail)
+                : new AdapterExecutionResult(false, "NSSM 写入后回读入口不一致"));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return Task.FromResult(new AdapterExecutionResult(false, exception.Message));
+        }
+    }
+
     private static bool SafeNativeName(string value) =>
         !string.IsNullOrWhiteSpace(value) &&
         value.Length <= 256 &&
+        value.IndexOfAny(['\\', '/']) < 0 &&
         value.All(static character => !char.IsControl(character));
 }
 
@@ -748,6 +1040,21 @@ internal static class WindowsCommandLine
 {
     public static string Build(string executablePath, IReadOnlyList<string> arguments) =>
         string.Join(' ', new[] { Quote(executablePath) }.Concat(arguments.Select(Quote)));
+
+    public static string BuildArguments(IReadOnlyList<string> arguments) =>
+        string.Join(' ', arguments.Select(Quote));
+
+    public static string ExtractExecutable(string commandLine)
+    {
+        var value = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+        if (value.StartsWith('"'))
+        {
+            var closingQuote = value.IndexOf('"', 1);
+            return closingQuote > 1 ? value[1..closingQuote] : string.Empty;
+        }
+        var executableEnd = value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return executableEnd >= 0 ? value[..(executableEnd + 4)] : value.Split(' ', 2)[0];
+    }
 
     private static string Quote(string value)
     {
@@ -778,6 +1085,41 @@ internal static class WindowsCommandLine
         }
 
         return result.Append('\\', slashCount * 2).Append('"').ToString();
+    }
+}
+
+internal sealed record NssmServiceEntrypoint(
+    string Application,
+    string AppDirectory,
+    string? AppParameters);
+
+internal static class NssmServiceConfiguration
+{
+    public static NssmServiceEntrypoint? Query(string serviceName)
+    {
+        using var parameters = Registry.LocalMachine.OpenSubKey(
+            $@"SYSTEM\CurrentControlSet\Services\{serviceName}\Parameters",
+            writable: false);
+        if (parameters is null) return null;
+        return new NssmServiceEntrypoint(
+            parameters.GetValue("Application") as string ?? string.Empty,
+            parameters.GetValue("AppDirectory") as string ?? string.Empty,
+            parameters.GetValue("AppParameters") as string);
+    }
+
+    public static void Change(
+        string serviceName,
+        string application,
+        string workingDirectory,
+        string arguments)
+    {
+        using var parameters = Registry.LocalMachine.OpenSubKey(
+            $@"SYSTEM\CurrentControlSet\Services\{serviceName}\Parameters",
+            writable: true) ?? throw new IOException($"服务 {serviceName} 缺少 NSSM Parameters");
+        parameters.SetValue("Application", application, RegistryValueKind.String);
+        parameters.SetValue("AppDirectory", workingDirectory, RegistryValueKind.String);
+        parameters.SetValue("AppParameters", arguments, RegistryValueKind.String);
+        parameters.Flush();
     }
 }
 

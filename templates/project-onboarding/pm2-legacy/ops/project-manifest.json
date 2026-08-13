@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-pm2",
+    "displayName": "请替换项目名称",
+    "description": "遗留 PM2 项目，只用于迁移期接入",
+    "owners": [
+      "change-me-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "backend",
+      "displayName": "后端服务",
+      "kind": "pm2Legacy",
+      "entrypoint": "backend-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "backend-http",
+          "path": "/health",
+          "expectedStatus": 200,
+          "expectJson": {
+            "status": "ok"
+          },
+          "timeoutSeconds": 2
+        }
+      ],
+      "pm2": {
+        "name": "change-me-backend",
+        "cwd": "backend",
+        "script": "backend/.venv/Scripts/pythonw.exe"
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "backend-http",
+      "componentId": "backend",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 9201,
+      "exposure": "loopback"
+    }
+  ],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

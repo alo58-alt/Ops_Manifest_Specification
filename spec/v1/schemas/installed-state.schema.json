@@ -109,7 +109,8 @@
               "iisSite",
               "staticSite",
               "scheduledTask",
-              "pm2Legacy"
+              "pm2Legacy",
+              "interactiveApp"
             ]
           },
           "adapter": {
@@ -117,7 +118,8 @@
               "scm",
               "iis",
               "taskScheduler",
-              "pm2Legacy"
+              "pm2Legacy",
+              "interactiveSession"
             ]
           },
           "nativeId": {

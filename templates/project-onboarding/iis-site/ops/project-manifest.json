@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-iis",
+    "displayName": "请替换项目名称",
+    "description": "请替换项目说明",
+    "owners": [
+      "change-me-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "web",
+      "displayName": "IIS Web 应用",
+      "kind": "iisSite",
+      "entrypoint": "web-dist",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "web-http",
+          "path": "/health",
+          "expectedStatus": 200,
+          "expectJson": {
+            "status": "ok"
+          },
+          "timeoutSeconds": 2
+        }
+      ],
+      "site": {
+        "managedRuntime": "none",
+        "pipelineMode": "Integrated"
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "web-http",
+      "componentId": "web",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 8080,
+      "exposure": "lan"
+    }
+  ],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

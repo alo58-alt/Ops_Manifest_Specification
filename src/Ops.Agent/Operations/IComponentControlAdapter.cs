@@ -8,6 +8,7 @@ public sealed record ComponentControlTarget(
     string ComponentId,
     string Kind,
     string NativeId,
+    string? InstallRoot = null,
     int? PmId = null);
 
 public sealed record AdapterExecutionResult(bool Success, string? Detail = null);

@@ -5,6 +5,10 @@ using CompanyOps.Agent.Persistence;
 using CompanyOps.Agent.Pipe;
 using CompanyOps.Agent.Operations;
 using CompanyOps.Agent.Deployment;
+using CompanyOps.Agent.Onboarding;
+using CompanyOps.Agent.Catalog;
+using CompanyOps.Agent.Projects;
+using CompanyOps.Agent.Updates;
 using CompanyOps.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,7 +29,8 @@ public sealed class NamedPipeServerTests
                 ManifestDirectory = Path.Combine(testDirectory.FullPath, "manifests"),
                 StateDirectory = testDirectory.FullPath,
                 PipeName = pipeName,
-                InventoryIntervalSeconds = 30
+                InventoryIntervalSeconds = 30,
+                EnableExistingServiceOperations = false
             });
         var pathResolver = new OpsPathResolver(options);
         var jsonOptions = TestDirectory.CreateJsonOptions();
@@ -51,6 +56,7 @@ public sealed class NamedPipeServerTests
                 new OperationGate(),
                 [],
                 new AlwaysHealthyGate(),
+                new NoopSnapshotRefresher(),
                 options,
                 jsonOptions),
             new DeploymentEngine(
@@ -64,6 +70,28 @@ public sealed class NamedPipeServerTests
                 pathResolver,
                 options,
                 jsonOptions),
+            new ExistingProjectOnboardingService(
+                pathResolver,
+                new ManifestCatalog(pathResolver),
+                cache,
+                new ProjectRegistry(pathResolver),
+                new DeclaredHealthGate(cache),
+                store,
+                new OperationGate(),
+                jsonOptions),
+            new ProjectDirectoryBrowser(),
+            new GitUpdateService(
+                cache,
+                store,
+                new OperationGate(),
+                new NoopSnapshotRefresher(),
+                new AlwaysHealthyGate(),
+                [new NoopWindowsServiceAdapter()],
+                new NoopGitCommandRunner(),
+                new GitCredentialStore(pathResolver),
+                options,
+                jsonOptions),
+            new NoopSnapshotRefresher(),
             options,
             NullLogger<NamedPipeServer>.Instance);
 
@@ -101,5 +129,32 @@ public sealed class NamedPipeServerTests
             await server.StopAsync(CancellationToken.None);
             server.Dispose();
         }
+    }
+
+    private sealed class NoopSnapshotRefresher : IOperationSnapshotRefresher
+    {
+        public Task RefreshAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class NoopWindowsServiceAdapter : IComponentControlAdapter
+    {
+        public string Kind => "windowsService";
+
+        public Task<AdapterExecutionResult> ExecuteAsync(
+            ComponentControlTarget target,
+            ComponentOperationAction action,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new AdapterExecutionResult(true));
+    }
+
+    private sealed class NoopGitCommandRunner : IGitCommandRunner
+    {
+        public Task<GitCommandResult> RunAsync(
+            string repositoryRoot,
+            IReadOnlyList<string> arguments,
+            TimeSpan timeout,
+            CancellationToken cancellationToken,
+            GitCredentialHandle? credential = null) =>
+            Task.FromResult(new GitCommandResult(false, 1, string.Empty, "unused"));
     }
 }

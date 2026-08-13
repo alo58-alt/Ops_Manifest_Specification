@@ -19,6 +19,8 @@ flowchart LR
   A --> TS["Task Scheduler"]
   A --> FS["静态文件与数据目录"]
   A --> PM2["PM2 Legacy Adapter"]
+  A --> SA["每登录用户一个 Session Agent"]
+  SA --> GUI["interactiveApp 精确 EXE"]
 ```
 
 ## 2. 信任边界
@@ -27,8 +29,8 @@ flowchart LR
 - Agent 以 Windows Service 运行，通过受 ACL 保护的 Named Pipe 接收结构化请求。
 - Agent 只实现白名单资源适配器，不接受任意 PowerShell、CMD 或可执行文件命令。
 - ProjectManifest 只表达需求；主机资源的最终值只能来自 EnvironmentBinding。
-- EnvironmentBinding 的安装目录必须是 Agent 配置中受审父目录的严格子目录；未配置白名单、指向盘符根目录或跨项目复用目录时失败关闭。
-- ReleaseManifest 的制品必须按 SHA-256 验证，版本安装采用临时目录、预检、原子切换和失败回滚。
+- EnvironmentBinding 的安装目录必须是 Agent 配置中受审父目录的严格子目录；未配置白名单、指向盘符根目录，或不同项目目录相同、互相嵌套时失败关闭。
+- ReleaseManifest 的制品必须按大小和 SHA-256 验证，版本安装采用临时目录、预检、原子切换和失败回滚；核心代码不得包含项目 ID、服务名或 EXE 名分支。
 - Secret 只以引用形式出现，实际值由未来的 Secret Provider 在执行时解析，永不写入日志或 InstalledState。
 
 ## 3. Agent 模块
@@ -53,6 +55,7 @@ v1 首先定义以下有限类型：
 - `staticSite`：Vue/React 等已构建静态产物，由 IIS 静态站点承载。
 - `scheduledTask`：周期任务或按事件触发的一次性任务。
 - `pm2Legacy`：迁移期兼容既有 PM2 服务，不允许新项目默认选择。
+- `interactiveApp`：需要窗口、托盘、摄像头、浏览器或用户交互的程序。由每个登录用户一个 `CompanyOps.SessionAgent` 在用户 Session 中承载，禁止作为 Windows Service 跨 Session 0 显示界面。
 
 v1 Schema 只声明公共安全面；每种适配器更详细的安装参数将在其能力模型定稿后追加，避免过早开放任意命令字段。
 
@@ -73,6 +76,8 @@ flowchart LR
 ```
 
 更新不得直接覆盖正在运行的目录。每个项目至少保留当前版本和上一可回滚版本；数据库迁移必须声明回滚兼容性，不能把文件回滚错误地等同于数据库回滚。
+
+`windowsService` 与 `interactiveApp` 共用同一组件事务：按反向依赖精确停止，切换 ReleaseManifest 声明的入口，再按依赖顺序启动并运行全部探针。原生 SCM 服务切换 `ImagePath`；NSSM 服务保持 SCM 指向 `nssm.exe`，只切换受控的 `Application/AppDirectory/AppParameters`；交互程序由 Agent 原子写入当前入口状态，Agent 与 Session Agent 使用同一状态。任一步受控失败均恢复每个组件的旧入口和原运行状态。
 
 ## 6. 遗留 PM2 边界
 

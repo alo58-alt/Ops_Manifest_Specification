@@ -146,10 +146,11 @@
           },
           "arguments": {
             "type": "array",
-            "maxItems": 100,
+            "maxItems": 32,
             "items": {
               "type": "string",
-              "maxLength": 1000
+              "maxLength": 500,
+              "pattern": "^[^\\r\\n\\u0000]*$"
             }
           }
         }

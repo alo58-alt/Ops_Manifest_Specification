@@ -2,7 +2,8 @@
 param(
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\publish'),
     [ValidateSet('Release', 'Debug')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [switch]$SelfContained
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +22,23 @@ function Invoke-Checked {
     }
 }
 
-$clientDirectory = Join-Path $repositoryRoot 'src\Ops.Console\ClientApp'
+$clientSource = Join-Path $repositoryRoot 'src\Ops.Console\ClientApp'
+$frontendBuildRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'CompanyOps.FrontendBuild.' + [Guid]::NewGuid().ToString('N'))
+$clientDirectory = Join-Path $frontendBuildRoot 'ClientApp'
+$builtWebRoot = Join-Path $frontendBuildRoot 'wwwroot'
+
+New-Item -ItemType Directory -Path $clientDirectory | Out-Null
+foreach ($fileName in @('package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html')) {
+    Copy-Item -LiteralPath (Join-Path $clientSource $fileName) -Destination $clientDirectory
+}
+foreach ($directoryName in @('src', 'public')) {
+    $source = Join-Path $clientSource $directoryName
+    if (Test-Path -LiteralPath $source -PathType Container) {
+        Copy-Item -LiteralPath $source -Destination $clientDirectory -Recurse
+    }
+}
+
 Push-Location $clientDirectory
 try {
     Invoke-Checked { npm ci --ignore-scripts } '前端依赖还原'
@@ -31,25 +48,56 @@ finally {
     Pop-Location
 }
 
+if (-not (Test-Path -LiteralPath (Join-Path $builtWebRoot 'index.html') -PathType Leaf)) {
+    throw '前端构建未生成隔离的 wwwroot。'
+}
+
 $projects = [ordered]@{
     Agent = 'src\Ops.Agent\Ops.Agent.csproj'
     Console = 'src\Ops.Console\Ops.Console.csproj'
     Pm2Bridge = 'src\Ops.Pm2Bridge\Ops.Pm2Bridge.csproj'
+    SessionAgent = 'src\Ops.SessionAgent\Ops.SessionAgent.csproj'
     Cli = 'src\Ops.Cli\Ops.Cli.csproj'
 }
 
 foreach ($entry in $projects.GetEnumerator()) {
     $destination = Join-Path $resolvedOutput $entry.Key
+    if (Test-Path -LiteralPath $destination) {
+        Remove-Item -LiteralPath $destination -Recurse -Force
+    }
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     Push-Location $repositoryRoot
     try {
         Invoke-Checked {
-            dotnet publish $entry.Value -c $Configuration --no-restore -o $destination
+            $arguments = @(
+                'publish',
+                $entry.Value,
+                '-c', $Configuration,
+                '--no-restore',
+                '-o', $destination
+            )
+            if ($SelfContained) {
+                $arguments += @('-r', 'win-x64', '--self-contained', 'true')
+            }
+            & dotnet @arguments
         } "发布 $($entry.Key)"
     }
     finally {
         Pop-Location
     }
+}
+
+$consoleWebRoot = Join-Path $resolvedOutput 'Console\wwwroot'
+if (Test-Path -LiteralPath $consoleWebRoot) {
+    Remove-Item -LiteralPath $consoleWebRoot -Recurse -Force
+}
+Copy-Item -LiteralPath $builtWebRoot -Destination $consoleWebRoot -Recurse
+
+try {
+    Remove-Item -LiteralPath $frontendBuildRoot -Recurse -Force -ErrorAction Stop
+}
+catch {
+    Write-Warning "隔离前端构建临时目录将在系统清理时移除：$frontendBuildRoot"
 }
 
 Write-Host "发布完成：$resolvedOutput"

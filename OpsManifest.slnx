@@ -5,9 +5,12 @@
     <Project Path="src/Ops.Console/Ops.Console.csproj" />
     <Project Path="src/Ops.Contracts/Ops.Contracts.csproj" />
     <Project Path="src/Ops.Pm2Bridge/Ops.Pm2Bridge.csproj" />
+    <Project Path="src/Ops.SessionAgent/Ops.SessionAgent.csproj" />
+    <Project Path="src/Ops.Setup/Ops.Setup.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Ops.Agent.Tests/Ops.Agent.Tests.csproj" />
     <Project Path="tests/Ops.Console.Tests/Ops.Console.Tests.csproj" />
+    <Project Path="tests/Ops.Setup.Tests/Ops.Setup.Tests.csproj" />
   </Folder>
 </Solution>

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-desktop-app",
+    "displayName": "请替换桌面程序名称",
+    "description": "需要在已登录用户桌面中显示的 Windows 程序",
+    "owners": ["change-me-team"]
+  },
+  "components": [
+    {
+      "id": "desktop",
+      "displayName": "桌面程序",
+      "kind": "interactiveApp",
+      "entrypoint": "desktop-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "interactiveProcess"
+        }
+      ],
+      "interactive": {
+        "executable": "bin/ChangeMe.Desktop.exe",
+        "workingDirectory": "bin",
+        "arguments": [],
+        "startPolicy": "userLogon",
+        "stopTimeoutSeconds": 10,
+        "allowForceTerminate": false
+      }
+    }
+  ],
+  "ports": [],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

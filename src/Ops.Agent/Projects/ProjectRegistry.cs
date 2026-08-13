@@ -81,17 +81,34 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
         IReadOnlyList<ProjectRuntimeView> projects,
         IReadOnlyDictionary<string, string?> installRoots)
     {
-        var conflicts = installRoots
+        var normalizedRoots = installRoots
             .Select(pair => new { ProjectKey = pair.Key, Root = NormalizePath(pair.Value) })
             .Where(static item => item.Root is not null)
-            .GroupBy(static item => item.Root!, StringComparer.OrdinalIgnoreCase)
-            .Where(static group => group.Count() > 1)
-            .SelectMany(group => group.Select(item => new
+            .Select(static item => new { item.ProjectKey, Root = item.Root! })
+            .ToArray();
+        var conflicts = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        for (var index = 0; index < normalizedRoots.Length; index++)
+        {
+            for (var otherIndex = index + 1; otherIndex < normalizedRoots.Length; otherIndex++)
             {
-                item.ProjectKey,
-                Detail = $"项目安装根目录 {group.Key} 被多个项目或环境声明"
-            }))
-            .ToDictionary(static item => item.ProjectKey, static item => item.Detail, StringComparer.Ordinal);
+                var left = normalizedRoots[index];
+                var right = normalizedRoots[otherIndex];
+                if (!PathsOverlap(left.Root, right.Root))
+                {
+                    continue;
+                }
+
+                AddConflict(
+                    left.ProjectKey,
+                    $"项目安装根目录 {left.Root} 与 {right.Root} 重叠",
+                    conflicts);
+                AddConflict(
+                    right.ProjectKey,
+                    $"项目安装根目录 {right.Root} 与 {left.Root} 重叠",
+                    conflicts);
+            }
+        }
+
         if (conflicts.Count == 0)
         {
             return projects;
@@ -99,7 +116,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
 
         return projects.Select(project =>
         {
-            if (!conflicts.TryGetValue(Key(project.ProjectId, project.Environment), out var detail))
+            if (!conflicts.TryGetValue(Key(project.ProjectId, project.Environment), out var details))
             {
                 return project;
             }
@@ -107,9 +124,36 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             return project with
             {
                 Status = ProjectBindingStatus.Conflict,
-                Problems = project.Problems.Append(detail).Distinct(StringComparer.Ordinal).ToArray()
+                Problems = project.Problems.Concat(details).Distinct(StringComparer.Ordinal).ToArray()
             };
         }).ToArray();
+    }
+
+    private static void AddConflict(
+        string projectKey,
+        string detail,
+        Dictionary<string, List<string>> conflicts)
+    {
+        if (!conflicts.TryGetValue(projectKey, out var details))
+        {
+            details = [];
+            conflicts.Add(projectKey, details);
+        }
+
+        details.Add(detail);
+    }
+
+    private static bool PathsOverlap(string left, string right)
+    {
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leftPrefix = left + Path.DirectorySeparatorChar;
+        var rightPrefix = right + Path.DirectorySeparatorChar;
+        return left.StartsWith(rightPrefix, StringComparison.OrdinalIgnoreCase) ||
+               right.StartsWith(leftPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? NormalizePath(string? path)
@@ -184,7 +228,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
 
     private static string? ResourceKey(ProjectComponentRuntimeView component)
     {
-        if (string.IsNullOrWhiteSpace(component.ExpectedNativeId) || component.Kind == "pm2Legacy")
+        if (string.IsNullOrWhiteSpace(component.ExpectedNativeId) || component.Kind is "pm2Legacy" or "interactiveApp")
         {
             return null;
         }
@@ -194,6 +238,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             "windowsService" => "scm",
             "iisSite" or "staticSite" => "iis",
             "scheduledTask" => "task",
+            "interactiveApp" => "interactive-session",
             _ => null
         };
         return adapter is null ? null : $"{adapter}:{component.ExpectedNativeId}";
@@ -245,9 +290,16 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             environment,
             status,
             String(installed, "release", "version"),
-            Long(installed, "metadata", "generation"),
+            Long(installed, "metadata", "generation") ?? Long(binding, "metadata", "revision"),
             components,
-            problems);
+            problems)
+        {
+            InstallRoot = String(binding, "roots", "install"),
+            GitUpdateEnabled = string.Equals(
+                String(manifest, "update", "source", "kind"),
+                "gitFastForward",
+                StringComparison.Ordinal)
+        };
     }
 
     private static IReadOnlyList<ProjectComponentRuntimeView> BuildComponents(
@@ -288,14 +340,21 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 ownership = ComponentOwnershipStatus.Conflict;
                 detail = bindingMatches is null ? "缺少 componentBinding" : "componentBinding 重复";
             }
-            else if (installed is null || stateMatches is null)
+            else if (installed is null)
             {
-                ownership = ComponentOwnershipStatus.DeclaredOnly;
+                installedNativeId = expectedNativeId;
+                (ownership, detail) = CorrelateRuntime(
+                    kind,
+                    expectedNativeId,
+                    installedNativeId,
+                    component,
+                    binding,
+                    inventory);
             }
-            else if (stateMatches.Length != 1 || !Equals(String(state, "kind"), kind))
+            else if (stateMatches is null || stateMatches.Length != 1 || !Equals(String(state, "kind"), kind))
             {
                 ownership = ComponentOwnershipStatus.Conflict;
-                detail = stateMatches.Length != 1 ? "InstalledState 组件重复" : "组件 kind 与声明不一致";
+                detail = stateMatches?.Length != 1 ? "InstalledState 组件重复" : "组件 kind 与声明不一致";
             }
             else
             {
@@ -307,6 +366,9 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 projectProblems.Add($"组件 {id}: {detail}");
             }
 
+            var runtimeState = kind == "interactiveApp"
+                ? ResolveInteractiveRuntimeState(binding, id, inventory)
+                : ResolveRuntimeState(kind, expectedNativeId, inventory);
             result.Add(new ProjectComponentRuntimeView(
                 id,
                 String(component, "displayName") ?? id,
@@ -314,7 +376,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 expectedNativeId,
                 installedNativeId,
                 ownership,
-                String(state, "runtimeState") ?? "unknown",
+                runtimeState ?? String(state, "runtimeState") ?? "unknown",
                 String(state, "healthState") ?? "unknown",
                 detail));
         }
@@ -330,7 +392,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
         JsonObject binding,
         InventorySnapshot inventory)
     {
-        if (kind != "pm2Legacy" && !Equals(expectedNativeId, installedNativeId))
+        if (kind is not ("pm2Legacy" or "interactiveApp") && !Equals(expectedNativeId, installedNativeId))
         {
             return (ComponentOwnershipStatus.Conflict, "InstalledState nativeId 与 EnvironmentBinding 不一致");
         }
@@ -341,6 +403,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             "iisSite" or "staticSite" => "iis",
             "scheduledTask" => "scheduled-tasks",
             "pm2Legacy" => "pm2-legacy",
+            "interactiveApp" => "interactive-apps",
             _ => string.Empty
         };
         var source = inventory.Sections.FirstOrDefault(section => Equals(section.Source, sourceName));
@@ -374,10 +437,174 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                     : ComponentOwnershipStatus.Unknown, item.Metadata.GetValueOrDefault("detail"));
         }
 
+        if (kind == "interactiveApp")
+        {
+            var projectId = String(binding, "metadata", "projectId");
+            var environment = String(binding, "metadata", "environment");
+            var componentId = String(component, "id");
+            var item = source.Items.SingleOrDefault(item => Equals(item.Id, $"{projectId}/{environment}/{componentId}"));
+            if (item is null) return (ComponentOwnershipStatus.Missing, "Session Agent 快照中没有该组件");
+            return item.State == "Matched"
+                ? (ComponentOwnershipStatus.Owned, item.Metadata.GetValueOrDefault("detail"))
+                : (item.State == "Conflict" ? ComponentOwnershipStatus.Conflict : ComponentOwnershipStatus.Unknown,
+                    item.Metadata.GetValueOrDefault("detail"));
+        }
+
         var inventoryId = kind is "iisSite" or "staticSite" ? $"site:{expectedNativeId}" : expectedNativeId;
-        return source.Items.Any(item => Equals(item.Id, inventoryId))
-            ? (ComponentOwnershipStatus.Owned, null)
-            : (ComponentOwnershipStatus.Missing, "已登记的原生资源未在主机盘点中找到");
+        var inventoryMatches = source.Items.Where(item => Equals(item.Id, inventoryId)).ToArray();
+        if (inventoryMatches.Length != 1)
+        {
+            return inventoryMatches.Length == 0
+                ? (ComponentOwnershipStatus.Missing, "已登记的原生资源未在主机盘点中找到")
+                : (ComponentOwnershipStatus.Conflict, "已登记的原生资源在主机盘点中不唯一");
+        }
+
+        if (kind == "windowsService" && !string.IsNullOrWhiteSpace(String(binding, "roots", "install")))
+        {
+            var installRoot = String(binding, "roots", "install");
+            if (!WindowsServiceBelongsToProject(inventoryMatches[0], installRoot, out var detail))
+            {
+                return (ComponentOwnershipStatus.Conflict, detail);
+            }
+        }
+
+        return (ComponentOwnershipStatus.Owned, null);
+    }
+
+    private static string? ResolveRuntimeState(
+        string kind,
+        string expectedNativeId,
+        InventorySnapshot inventory)
+    {
+        var sourceName = kind switch
+        {
+            "windowsService" => "windows-services",
+            "iisSite" or "staticSite" => "iis",
+            "scheduledTask" => "scheduled-tasks",
+            _ => null
+        };
+        if (sourceName is null)
+        {
+            return null;
+        }
+
+        var inventoryId = kind is "iisSite" or "staticSite" ? $"site:{expectedNativeId}" : expectedNativeId;
+        var item = inventory.Sections
+            .SingleOrDefault(section => section.Source == sourceName && section.Status == InventorySourceStatus.Available)?
+            .Items.SingleOrDefault(candidate => Equals(candidate.Id, inventoryId));
+        return item?.State.ToLowerInvariant();
+    }
+
+    private static string? ResolveInteractiveRuntimeState(
+        JsonObject binding,
+        string componentId,
+        InventorySnapshot inventory)
+    {
+        var projectId = String(binding, "metadata", "projectId");
+        var environment = String(binding, "metadata", "environment");
+        return inventory.Sections
+            .SingleOrDefault(section => section.Source == "interactive-apps" && section.Status == InventorySourceStatus.Available)?
+            .Items.SingleOrDefault(item => Equals(item.Id, $"{projectId}/{environment}/{componentId}"))?
+            .Metadata.GetValueOrDefault("runtimeStatus")?.ToLowerInvariant();
+    }
+
+    private static bool WindowsServiceBelongsToProject(
+        InventoryItem item,
+        string? installRoot,
+        out string detail)
+    {
+        detail = string.Empty;
+        var executable = ExtractExecutablePath(item.Metadata.GetValueOrDefault("binaryPath"));
+        if (!PathInsideRoot(executable, installRoot))
+        {
+            detail = "Windows Service ImagePath 不在项目目录内";
+            return false;
+        }
+
+        var nssmApplication = item.Metadata.GetValueOrDefault("nssmApplication");
+        var nssmDirectory = item.Metadata.GetValueOrDefault("nssmAppDirectory");
+        var nssmParameters = item.Metadata.GetValueOrDefault("nssmAppParameters");
+        if (nssmApplication is null && nssmDirectory is null && nssmParameters is null)
+        {
+            return true;
+        }
+
+        if (!PathInsideRoot(nssmApplication, installRoot) ||
+            !PathInsideRoot(nssmDirectory, installRoot))
+        {
+            detail = "NSSM Application 或 AppDirectory 未归属项目目录";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string? ExtractExecutablePath(string? commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return null;
+        }
+
+        var value = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+        if (value.StartsWith('"'))
+        {
+            var closingQuote = value.IndexOf('"', 1);
+            return closingQuote > 1 ? value[1..closingQuote] : null;
+        }
+
+        var executableEnd = value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return executableEnd >= 0 ? value[..(executableEnd + 4)] : value.Split(' ', 2)[0];
+    }
+
+    private static bool PathInsideRoot(string? path, string? root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
+            var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+            return fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static bool PathEqualsRoot(string? path, string? root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim().Trim('"'))),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static bool CommandLineReferencesRoot(string? commandLine, string? root)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine) || string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        return commandLine.IndexOf(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static string Key(string? projectId, string? environment) => $"{projectId}\n{environment}";

@@ -1,0 +1,26 @@
+{
+  "apiVersion": "ops.company/v1",
+  "recipeKind": "ReleaseRecipe",
+  "artifact": {
+    "id": "application-package",
+    "fileName": "${PROJECT_ID}-${VERSION}-win-x64.zip"
+  },
+  "target": {
+    "architecture": "x64",
+    "minAgentVersion": "0.1.0"
+  },
+  "componentPayloads": [
+    {
+      "componentId": "replace-component-id",
+      "entrypoint": "replace-entrypoint-id",
+      "path": "component/Application.exe",
+      "workingDirectory": "component",
+      "arguments": [
+        "--data-dir",
+        "${ROOT_DATA}",
+        "--logs-dir",
+        "${ROOT_LOGS}"
+      ]
+    }
+  ]
+}

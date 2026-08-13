@@ -5,6 +5,8 @@ using CompanyOps.Agent.Inventory;
 using CompanyOps.Agent.Persistence;
 using CompanyOps.Agent.Operations;
 using CompanyOps.Agent.Deployment;
+using CompanyOps.Agent.Onboarding;
+using CompanyOps.Agent.Updates;
 using CompanyOps.Contracts;
 using Microsoft.Extensions.Options;
 
@@ -18,6 +20,10 @@ public sealed class NamedPipeServer(
     JsonSerializerOptions jsonOptions,
     OperationCoordinator operationCoordinator,
     DeploymentEngine deploymentEngine,
+    ExistingProjectOnboardingService onboardingService,
+    ProjectDirectoryBrowser projectDirectoryBrowser,
+    GitUpdateService gitUpdateService,
+    IOperationSnapshotRefresher operationSnapshotRefresher,
     IOptions<OpsOptions> options,
     ILogger<NamedPipeServer> logger) : BackgroundService
 {
@@ -63,6 +69,10 @@ public sealed class NamedPipeServer(
             {
                 "deploy" => TimeSpan.FromMinutes(10),
                 "operate" => TimeSpan.FromMinutes(2),
+                "onboard" => TimeSpan.FromSeconds(30),
+                "git-update" => TimeSpan.FromMinutes(5),
+                "git-credential-set" => TimeSpan.FromSeconds(30),
+                "browse-directories" => TimeSpan.FromSeconds(10),
                 _ => TimeSpan.FromSeconds(10)
             });
             response = await DispatchAsync(request, processingTimeout.Token);
@@ -78,6 +88,14 @@ public sealed class NamedPipeServer(
         catch (InvalidDataException exception)
         {
             response = Failure("unknown", "invalid_request", exception.Message);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Named Pipe 请求处理发生未预期异常");
+            response = Failure(
+                "unknown",
+                "agent_internal_error",
+                $"Ops Agent 处理失败：{exception.GetType().Name}：{exception.Message}");
         }
 
         var responseBytes = JsonSerializer.SerializeToUtf8Bytes(response, jsonOptions);
@@ -124,7 +142,13 @@ public sealed class NamedPipeServer(
                 {
                     hostId = _hostId,
                     agentVersion = typeof(NamedPipeServer).Assembly.GetName().Version?.ToString(),
-                    mode = options.Value.EnableMutations ? "mutations-enabled" : "read-only"
+                    mode = options.Value.EnableMutations
+                        ? "mutations-enabled"
+                        : options.Value.EnableExistingServiceOperations
+                            ? "service-control-enabled"
+                            : "read-only",
+                    gitUpdatesEnabled = options.Value.EnableExistingGitUpdates,
+                    interactiveSessionOperationsEnabled = options.Value.EnableInteractiveSessionOperations
                 };
                 break;
             case "inventory":
@@ -144,6 +168,7 @@ public sealed class NamedPipeServer(
 
                 break;
             case "projects":
+                await operationSnapshotRefresher.RefreshAsync(cancellationToken);
                 data = snapshotCache.Read().Projects;
                 if (data is null)
                 {
@@ -182,8 +207,55 @@ public sealed class NamedPipeServer(
 
                 data = await deploymentEngine.ExecuteAsync(deploymentRequest, cancellationToken);
                 break;
+            case "onboard":
+                if (request.Data is null)
+                {
+                    return Failure(command, "invalid_onboarding", "onboard 必须携带 data", correlationId);
+                }
+
+                var onboardingRequest = request.Data.Value.Deserialize<ExistingProjectOnboardingRequest>(jsonOptions);
+                if (onboardingRequest is null)
+                {
+                    return Failure(command, "invalid_onboarding", "无法解析项目接入请求", correlationId);
+                }
+
+                data = await onboardingService.ExecuteAsync(onboardingRequest, cancellationToken);
+                break;
+            case "browse-directories":
+                var browseRequest = request.Data?.Deserialize<DirectoryBrowseRequest>(jsonOptions)
+                    ?? new DirectoryBrowseRequest();
+                data = projectDirectoryBrowser.Browse(browseRequest);
+                break;
+            case "git-update":
+                if (request.Data is null)
+                {
+                    return Failure(command, "invalid_git_update", "git-update 必须携带 data", correlationId);
+                }
+
+                var gitUpdateRequest = request.Data.Value.Deserialize<GitUpdateRequest>(jsonOptions);
+                if (gitUpdateRequest is null)
+                {
+                    return Failure(command, "invalid_git_update", "无法解析 Git 更新请求", correlationId);
+                }
+
+                data = await gitUpdateService.ExecuteAsync(gitUpdateRequest, cancellationToken);
+                break;
+            case "git-credential-set":
+                if (request.Data is null)
+                {
+                    return Failure(command, "invalid_git_credential", "git-credential-set 必须携带 data", correlationId);
+                }
+
+                var gitCredentialRequest = request.Data.Value.Deserialize<GitCredentialSetRequest>(jsonOptions);
+                if (gitCredentialRequest is null)
+                {
+                    return Failure(command, "invalid_git_credential", "无法解析 Git 凭据请求", correlationId);
+                }
+
+                data = await gitUpdateService.SetCredentialAsync(gitCredentialRequest, cancellationToken);
+                break;
             default:
-                return Failure(command, "unknown_command", "只允许 ping、inventory、catalog、projects、audit、operate、deploy", correlationId);
+                return Failure(command, "unknown_command", "只允许 ping、inventory、catalog、projects、audit、operate、deploy、onboard、browse-directories、git-update、git-credential-set", correlationId);
         }
 
         return new AgentResponse(

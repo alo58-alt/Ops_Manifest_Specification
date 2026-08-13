@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-service",
+    "displayName": "请替换项目名称",
+    "description": "请替换项目说明",
+    "owners": [
+      "change-me-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "api",
+      "displayName": "API 服务",
+      "kind": "windowsService",
+      "entrypoint": "api-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "api-http",
+          "path": "/health",
+          "expectedStatus": 200,
+          "expectJson": {
+            "status": "ok"
+          },
+          "timeoutSeconds": 2
+        }
+      ],
+      "service": {
+        "startMode": "delayed",
+        "failureRestartLimit": 3
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "api-http",
+      "componentId": "api",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 9201,
+      "exposure": "loopback"
+    }
+  ],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

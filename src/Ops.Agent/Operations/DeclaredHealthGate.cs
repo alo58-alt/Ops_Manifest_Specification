@@ -25,7 +25,10 @@ public interface IManifestHealthGate
         CancellationToken cancellationToken);
 }
 
-public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComponentHealthGate, IManifestHealthGate
+public sealed class DeclaredHealthGate(
+    AgentSnapshotCache snapshotCache,
+    IInteractiveSessionClaimProvider? interactiveClaims = null,
+    InteractiveSnapshotReader? interactiveSnapshots = null) : IComponentHealthGate, IManifestHealthGate
 {
     public async Task<HealthGateResult> ProbeAsync(
         string projectId,
@@ -88,7 +91,12 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
 
         foreach (var probe in probes)
         {
-            var result = await ProbeOneAsync(probe, binding, cancellationToken);
+            var result = await ProbeOneAsync(
+                probe,
+                projectManifest,
+                binding,
+                componentId,
+                cancellationToken);
             if (!result.Success)
             {
                 return result;
@@ -98,9 +106,11 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
         return new HealthGateResult(true, $"{probes.Length} 个声明式健康探针通过");
     }
 
-    private static async Task<HealthGateResult> ProbeOneAsync(
+    private async Task<HealthGateResult> ProbeOneAsync(
         JsonObject probe,
+        JsonObject projectManifest,
         JsonObject binding,
+        string componentId,
         CancellationToken cancellationToken)
     {
         var kind = probe["kind"]?.GetValue<string>();
@@ -114,6 +124,11 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
                 "http" => await ProbeHttpAsync(probe, binding, timeout.Token),
                 "tcp" => await ProbeTcpAsync(probe, binding, timeout.Token),
                 "fileHeartbeat" => ProbeFileHeartbeat(probe, binding),
+                "interactiveProcess" => await ProbeInteractiveProcessAsync(
+                    projectManifest,
+                    binding,
+                    componentId,
+                    timeout.Token),
                 _ => new HealthGateResult(false, $"未知健康探针 kind：{kind}")
             };
         }
@@ -126,6 +141,38 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
         {
             return new HealthGateResult(false, $"{kind} 健康探针失败：{exception.Message}");
         }
+    }
+
+    private async Task<HealthGateResult> ProbeInteractiveProcessAsync(
+        JsonObject projectManifest,
+        JsonObject binding,
+        string componentId,
+        CancellationToken cancellationToken)
+    {
+        if (interactiveClaims is null || interactiveSnapshots is null)
+            return new HealthGateResult(false, "交互进程探针未配置 Session Agent 快照读取器");
+        var projectId = projectManifest["metadata"]?["id"]?.GetValue<string>();
+        var environment = binding["metadata"]?["environment"]?.GetValue<string>();
+        if (projectId is null || environment is null)
+            return new HealthGateResult(false, "交互进程探针缺少项目或环境身份");
+        var matches = (await interactiveClaims.GetClaimsAsync(cancellationToken)).Where(claim =>
+            claim.ProjectId == projectId && claim.Environment == environment &&
+            claim.ComponentId == componentId && claim.BindingError is null).ToArray();
+        if (matches.Length != 1)
+            return new HealthGateResult(false, "交互进程声明不唯一或不完整");
+        var claim = matches[0];
+        var read = await interactiveSnapshots.ReadAsync(claim, cancellationToken);
+        if (read.State != "Available" || read.Snapshot is null)
+            return new HealthGateResult(false, read.Detail);
+        var running = read.Snapshot.Processes.Where(process =>
+            process.ProjectId == projectId && process.Environment == environment &&
+            process.ComponentId == componentId && process.State == "running" &&
+            string.Equals(process.Executable, claim.ExpectedExecutable, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(process.WorkingDirectory, claim.ExpectedWorkingDirectory, StringComparison.OrdinalIgnoreCase) &&
+            process.Arguments.SequenceEqual(claim.ExpectedArguments, StringComparer.Ordinal)).ToArray();
+        return running.Length == 1
+            ? new HealthGateResult(true, $"交互进程 PID {running[0].ProcessId} 与当前用户会话声明一致")
+            : new HealthGateResult(false, "交互进程未运行或精确归属不唯一");
     }
 
     private static async Task<HealthGateResult> ProbeHttpAsync(
@@ -185,15 +232,22 @@ public sealed class DeclaredHealthGate(AgentSnapshotCache snapshotCache) : IComp
 
     private static HealthGateResult ProbeFileHeartbeat(JsonObject probe, JsonObject binding)
     {
-        var dataRoot = binding["roots"]?["data"]?.GetValue<string>();
-        var relativePath = probe["path"]?.GetValue<string>();
-        if (dataRoot is null || relativePath is null)
+        var rootRef = probe["rootRef"]?.GetValue<string>() ?? "data";
+        var selectedRoot = rootRef switch
         {
-            return new HealthGateResult(false, "文件心跳缺少 data root 或 path");
+            "install" => binding["roots"]?["install"]?.GetValue<string>(),
+            "data" => binding["roots"]?["data"]?.GetValue<string>(),
+            "logs" => binding["roots"]?["logs"]?.GetValue<string>(),
+            _ => null
+        };
+        var relativePath = probe["path"]?.GetValue<string>();
+        if (selectedRoot is null || relativePath is null)
+        {
+            return new HealthGateResult(false, $"文件心跳缺少 {rootRef} root 或 path");
         }
 
-        var fullPath = Path.GetFullPath(Path.Combine(dataRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = Path.GetFullPath(dataRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var fullPath = Path.GetFullPath(Path.Combine(selectedRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var prefix = Path.GetFullPath(selectedRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(fullPath))
         {
             return new HealthGateResult(false, "文件心跳不存在或路径逃逸");

@@ -10,8 +10,11 @@
 - 安全控制：generation 乐观锁、幂等键、资源门禁、依赖拓扑、HTTP/TCP/文件心跳健康门禁和完整审计；
 - 白名单适配器：Windows SCM、IIS site、Task Scheduler、PM2 owner bridge；
 - 发布事务：目标架构/Agent 版本/ProjectManifest 哈希、制品大小/SHA-256、ZIP 路径防护、端口事务、不可变 release；已存在 Windows Service 支持真实 `ImagePath` 切换、依赖启动、健康复核和失败恢复；
-- ASP.NET Core + Vue 3 Console：仅监听 loopback，Windows Negotiate，reader/operator/admin，防 CSRF、安全响应头和高风险确认；
-- 诊断 CLI：查询与结构化 `operate` / `deploy` 请求。
+- ASP.NET Core + Vue 3 Console：仅监听 loopback，Windows Negotiate，reader/operator/admin，防 CSRF、安全响应头、高风险确认，以及受控 Plan / Install / Update / Rollback 表单；
+- 通用现有项目接入：输入服务器项目目录，先只读校验 L1 材料和主机资源唯一归属，再原子导入 ProjectManifest / EnvironmentBinding；不创建 InstalledState、不控制业务服务；
+- 分级运维：L1 观察与健康、L2 精确 Windows Service 启停、L3 声明式 Git 快进或 ReleaseManifest 制品发布；
+- L3 Git 更新默认拒绝脏工作树、分叉、远端不匹配、依赖清单变化和缺少前端构建产物，更新失败恢复原提交并重新启动原服务；
+- 诊断 CLI：查询与结构化 `operate` / `deploy` 请求，按命令设置有上限的等待时间。
 
 `Ops:EnableMutations` 默认为 `false`。仓库测试不会注册、启动、停止或修改本机现有服务、IIS、任务计划或真实 PM2 daemon。
 
@@ -61,6 +64,7 @@ pwsh -NoProfile -File .\tools\Publish-OpsPlatform.ps1
 
 ## 使用入口
 
+- [项目接入 CompanyOps 开发规范（每个项目必须遵守）](docs/project-onboarding-standard.md)
 - [傻瓜式完整操作手册（从构建、安装到项目接入）](docs/complete-operations-manual.md)
 - [v1 运维声明规范](docs/specification-v1.md)
 - [系统架构与信任边界](docs/architecture.md)

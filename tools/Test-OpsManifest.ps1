@@ -162,6 +162,11 @@ function Test-ProjectManifestSemantics {
             }
         }
 
+        if ($component.kind -eq 'interactiveApp' -and
+            @($component.health | Where-Object kind -EQ 'interactiveProcess').Count -eq 0) {
+            $Errors.Add("交互组件 $($component.id) 必须声明 interactiveProcess 健康探针")
+        }
+
         if ($component.kind -eq 'pm2Legacy') {
             $cwd = ([string]$component.pm2.cwd).Replace('\', '/').TrimEnd('/')
             $script = ([string]$component.pm2.script).Replace('\', '/')

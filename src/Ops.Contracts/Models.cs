@@ -85,7 +85,12 @@ public sealed record ProjectRuntimeView(
     string? InstalledVersion,
     long? Generation,
     IReadOnlyList<ProjectComponentRuntimeView> Components,
-    IReadOnlyList<string> Problems);
+    IReadOnlyList<string> Problems)
+{
+    public string? InstallRoot { get; init; }
+
+    public bool GitUpdateEnabled { get; init; }
+}
 
 public sealed record ProjectComponentRuntimeView(
     string ComponentId,
@@ -158,6 +163,56 @@ public enum OperationOutcome
     Failed
 }
 
+public sealed record GitUpdateRequest(
+    string OperationId,
+    string IdempotencyKey,
+    string ProjectId,
+    string Environment,
+    GitUpdateAction Action,
+    long ExpectedGeneration,
+    string? ExpectedCurrentCommit = null,
+    string? ExpectedRemoteCommit = null);
+
+public enum GitUpdateAction
+{
+    Check,
+    Apply
+}
+
+public sealed record GitUpdateResult(
+    string OperationId,
+    GitUpdateAction Action,
+    OperationOutcome Outcome,
+    string ProjectId,
+    string Environment,
+    bool UpdateAvailable,
+    bool CanApply,
+    string? CurrentCommit,
+    string? RemoteCommit,
+    IReadOnlyList<string> ChangedFiles,
+    IReadOnlyList<string> Steps,
+    string? ErrorCode = null,
+    string? Detail = null);
+
+public sealed record GitCredentialSetRequest(
+    string OperationId,
+    string IdempotencyKey,
+    string ProjectId,
+    string Environment,
+    long ExpectedGeneration,
+    string Username,
+    string Secret);
+
+public sealed record GitCredentialSetResult(
+    string OperationId,
+    OperationOutcome Outcome,
+    string ProjectId,
+    string Environment,
+    string? RemoteHost,
+    bool Configured,
+    string? ErrorCode = null,
+    string? Detail = null);
+
 public sealed record ArtifactValidationResult(
     bool Success,
     string ProjectId,
@@ -218,6 +273,72 @@ public sealed record DeploymentResult(
     string? ErrorCode = null,
     string? Detail = null);
 
+public sealed record ExistingProjectOnboardingRequest(
+    string ProjectRoot,
+    string Environment,
+    ExistingProjectOnboardingAction Action,
+    string? ExpectedPlanToken = null,
+    IReadOnlyDictionary<string, string>? NativeNames = null,
+    IReadOnlyDictionary<string, int>? Ports = null,
+    string? DataRoot = null,
+    string? LogsRoot = null,
+    string? InteractiveOwnerSid = null);
+
+public enum ExistingProjectOnboardingAction
+{
+    Plan,
+    Apply
+}
+
+public sealed record DirectoryBrowseRequest(string? Path = null);
+
+public sealed record DirectoryBrowseResult(
+    string? CurrentPath,
+    string? ParentPath,
+    bool IsProjectRoot,
+    IReadOnlyList<DirectoryBrowseEntry> Directories);
+
+public sealed record DirectoryBrowseEntry(string Name, string FullPath);
+
+public sealed record ExistingProjectOnboardingResult(
+    ExistingProjectOnboardingAction Action,
+    OperationOutcome Outcome,
+    string? ProjectId,
+    string? DisplayName,
+    string Environment,
+    string HostId,
+    bool CanApply,
+    bool AlreadyOnboarded,
+    string? PlanToken,
+    IReadOnlyList<OnboardingComponentProposal> Components,
+    IReadOnlyList<OnboardingPortProposal> Ports,
+    IReadOnlyList<OnboardingHealthResult> Health,
+    IReadOnlyList<string> Steps,
+    IReadOnlyList<string> Problems,
+    string? ErrorCode = null,
+    string? Detail = null);
+
+public sealed record OnboardingComponentProposal(
+    string ComponentId,
+    string DisplayName,
+    string Kind,
+    string? NativeName,
+    bool RequiresInput,
+    IReadOnlyList<string> Candidates);
+
+public sealed record OnboardingPortProposal(
+    string PortId,
+    string ComponentId,
+    string Protocol,
+    string Address,
+    int? Port,
+    bool RequiresInput);
+
+public sealed record OnboardingHealthResult(
+    string ComponentId,
+    bool Success,
+    string? Detail);
+
 public static class Pm2BridgeProtocol
 {
     public const string Version = "ops-pm2-control/v1";
@@ -239,10 +360,94 @@ public sealed record Pm2BridgeControlResponse(
     string? ErrorCode = null,
     string? Detail = null);
 
+public static class InteractiveSessionProtocol
+{
+    public const string ControlVersion = "ops-interactive-control/v1";
+    public const string SnapshotVersion = "ops-interactive-snapshot/v1";
+    public const string EntrypointStateVersion = "ops-interactive-entrypoint/v1";
+    public const string EntrypointStateDirectory = ".runtime/interactive-entrypoints";
+
+    public static string OwnerKey(string ownerSid)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(ownerSid.ToUpperInvariant()));
+        return Convert.ToHexString(bytes.AsSpan(0, 8)).ToLowerInvariant();
+    }
+
+    public static string PipeName(string ownerSid) =>
+        $"CompanyOps.SessionAgent.{OwnerKey(ownerSid)}";
+
+    public static string SnapshotFileName(string projectId, string environment, string ownerSid) =>
+        $"interactive-{projectId}-{environment}-{OwnerKey(ownerSid)}.json";
+
+    public static string EntrypointStateFileName(string projectId, string environment, string componentId) =>
+        $"{projectId}.{environment}.{componentId}.json";
+}
+
+public sealed record InteractiveEntrypointState(
+    string ProtocolVersion,
+    string ProjectId,
+    string Environment,
+    string ComponentId,
+    string Executable,
+    string WorkingDirectory,
+    IReadOnlyList<string> Arguments,
+    DateTimeOffset UpdatedAt);
+
+public sealed record InteractiveAppControlRequest(
+    string ProtocolVersion,
+    string RequestId,
+    string ProjectId,
+    string Environment,
+    string ComponentId,
+    string ExpectedExecutable,
+    string ExpectedWorkingDirectory,
+    IReadOnlyList<string> ExpectedArguments,
+    ComponentOperationAction Action);
+
+public sealed record InteractiveAppControlResponse(
+    string ProtocolVersion,
+    string RequestId,
+    bool Success,
+    string? ErrorCode = null,
+    string? Detail = null);
+
+public sealed record InteractiveAppSnapshot(
+    string ProtocolVersion,
+    string OwnerSid,
+    int SessionId,
+    DateTimeOffset CapturedAt,
+    IReadOnlyList<InteractiveAppProcessSnapshot> Processes);
+
+public sealed record InteractiveAppProcessSnapshot(
+    string ProjectId,
+    string Environment,
+    string ComponentId,
+    string Executable,
+    string WorkingDirectory,
+    IReadOnlyList<string> Arguments,
+    string State,
+    int? ProcessId,
+    DateTimeOffset? ProcessStartedAt);
+
 public sealed record AuditEvent(
     string EventId,
     DateTimeOffset OccurredAt,
     string Category,
     string Action,
     string Outcome,
-    string? Detail = null);
+    string? Detail = null,
+    JsonElement? Data = null);
+
+public sealed record GitUpdateAuditData(
+    string OperationId,
+    string ProjectId,
+    string Environment,
+    GitUpdateAction Action,
+    string? FromCommit,
+    string? ToCommit,
+    IReadOnlyList<string> ChangedFiles,
+    IReadOnlyList<string> Steps,
+    long DurationMilliseconds,
+    bool RolledBack,
+    string? ErrorCode = null);

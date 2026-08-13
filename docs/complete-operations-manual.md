@@ -1,5 +1,7 @@
 # CompanyOps Windows 完整操作手册（傻瓜式 MVP / 试点版）
 
+> 普通首次安装不要从第 4 章逐条复制工程命令。请直接打开仓库根目录的 `三步安装CompanyOps.md`：构建电脑双击生成安装包、复制一个 EXE、服务器双击安装。后续章节只用于工程排障和高级接入。
+
 > 适用仓库：`Ops_Manifest_Specification`
 > 适用平台：Windows 10/11、Windows Server，x64
 > 适用阶段：CompanyOps MVP 首次安装、只读盘点、项目声明接入和受控试点
@@ -19,6 +21,7 @@
 | 扫描 ProjectManifest、EnvironmentBinding、InstalledState | 已实现 | 可以 |
 | 盘点 Windows Service、IIS、任务计划、监听端口 | 已实现 | 可以 |
 | 只读查看项目、归属、健康和审计 | 已实现 | 可以 |
+| Console 图形化 Plan / Install / Update / Rollback 请求 | 已实现并通过前端生产构建 | 完成 operator 浏览器与试点主机 UAT 后可以 |
 | 校验 ReleaseManifest、ZIP 大小和 SHA-256 | 已实现 | 可以 |
 | 安全解包到不可变 release、登记端口和版本指针 | 已实现 MVP | 只允许工程试点 |
 | 精确启停已存在且已证明归属的原生组件 | 已实现 | 现场授权后可以 |
@@ -36,11 +39,11 @@
 | Secret Provider | 只支持 `secretRef` 契约，尚不解析真实 Secret | 不在 Manifest 写明文；仍由现有安全配置流程注入 |
 | 防火墙、证书、HTTPS | 未实现 | 由主机现有基线或人工审批流程处理 |
 | 数据库备份与迁移 | 未实现 | 继续使用项目专属备份、迁移和回退方案 |
+| 断电 / Agent 进程崩溃后的自动事务恢复 | 受控异常会回滚，但尚无跨进程持久化激活日志 | 试点窗口先留存旧 ImagePath、pointer 和 InstalledState；异常重启后按审计与真实 SCM 状态人工恢复，不做无人值守发布 |
 | 平台自身升级、卸载 | 安装脚本只支持首次安装 | 不得覆盖安装目录；等待版本化升级器 |
 | 多主机集中控制 | 当前阶段明确不需要，不属于生产阻塞项 | 每台主机独立安装一个 Agent 和 Console |
-| Console 图形化部署页面 | 当前 UI 只展示状态、审计和组件启停 | 发布请求仍属于工程试点操作 |
 
-**结论：** 普通运维当前可以安全完成“安装 CompanyOps、保持只读、接入声明、查看状态”。单 Windows Service 项目已经具备真实入口切换代码闭环，但项目安装、更新、回滚和启停仍必须先在试点主机完成现场验收，不能只凭自动化测试直接照搬到生产。
+**结论：** 普通运维当前可以安全完成“安装 CompanyOps、保持只读、接入声明、查看状态”。Windows Service（含 NSSM）与 interactiveApp 已共用真实入口切换代码闭环，但项目安装、更新、回滚和启停仍必须先在试点主机完成现场验收，不能只凭自动化测试直接照搬到生产。
 
 ---
 
@@ -1007,7 +1010,19 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 
 ## 11. 只做部署计划（普通运维到这里为止）
 
-保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录。
+保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。
+
+### 11.1 Console 图形页面（普通运维优先）
+
+1. 在本机 Console 的“受控发布”中选择项目环境；
+2. 选择 `Plan（只读预检）`；
+3. 输入 ReleaseManifest 的主机绝对路径和制品所在主机目录；
+4. 核对页面显示的 generation、项目状态、Agent 模式以及固定的 operationId/idempotencyKey；
+5. 点击“执行 Plan”，逐条阅读返回步骤并检查最近审计。
+
+请求获得明确结果后页面会生成下一条新幂等键；网络错误或超时时保留原键。遇到不确定结果必须先查 `audit`，只允许使用同一键重试，不能生成新键猜测执行。
+
+### 11.2 CLI 结构化请求（工程诊断）
 
 输入实际发布目录，让 PowerShell 生成 `deploy-plan.json`，避免手工转义路径：
 
@@ -1045,7 +1060,7 @@ $CompanyOpsCli = Join-Path $InstallRoot 'Cli\companyops.exe'
 - 显示计划目标 release 路径；
 - 没有修改服务、IIS、任务计划和 current pointer。
 
-> 当前 CLI 的总通信超时为 5 秒。小型 Plan 通常可完成；如果显示 Pipe 超时，不要重复使用相同或新 idempotencyKey 猜测执行。先查看 `audit`、目标目录和 Agent 日志，确认请求是否已经执行。正式部署前应先完善 CLI 的分命令超时和部署 UI。
+> CLI 默认给 `deploy` 10 分钟、`operate` 2 分钟、只读命令 10 秒；必要时可用 `--timeout-seconds <1-1800>` 在受控范围内覆盖。超时不等于 Agent 没有执行，不要更换幂等键猜测重试；先查看 `audit`、目标目录和 Agent 日志确认真实状态。
 
 ---
 
@@ -1132,7 +1147,7 @@ $CompanyOpsCli = Join-Path $InstallRoot 'Cli\companyops.exe'
 
 每次新的业务动作都使用新的 `operationId` 和 `idempotencyKey`。同一个幂等键不能用于不同请求。
 
-由于 CLI 当前 5 秒总超时，真实启停优先使用 Console。CLI 超时不等于 Agent 没有执行，必须查审计和真实资源状态。
+CLI 对 `operate` 默认等待 2 分钟，也可用 `--timeout-seconds <1-1800>` 在受控范围内覆盖。CLI 超时不等于 Agent 没有执行，仍必须查审计和真实资源状态。
 
 ---
 
@@ -1143,7 +1158,7 @@ $CompanyOpsCli = Join-Path $InstallRoot 'Cli\companyops.exe'
 当前 `Install` / `Update` 会：
 
 1. 校验 ReleaseManifest、ZIP、目标架构、最低 Agent 版本和 ProjectManifest SHA-256；
-2. 在 `Plan` 阶段确认每个组件都具备发布激活适配器；
+2. 在 `Plan` 阶段确认每个组件都具备发布激活适配器，并只读确认 Windows Service 的精确 SCM/NSSM 入口或 interactiveApp 的精确会话入口与可迁移状态；
 3. 预留端口并解包到 `.staging`；
 4. 移动为不可变 `releases/<version>`；
 5. 对已存在 Windows Service 完成全量入口预检、反向依赖停止、SCM `ImagePath` 切换、依赖启动和声明式健康复核；
@@ -1422,7 +1437,19 @@ Get-WinEvent -LogName Application -MaxEvents 200 |
 
 这只是诊断，不代表所有日志都使用 CompanyOps 作为 ProviderName。
 
-### 17.1 Git 被重写到失效镜像
+### 17.1 私有 Git 仓库提示无法读取用户名
+
+若“检查更新”提示 `could not read Username`、`terminal prompts disabled` 或 `Authentication failed`，说明项目声明的 HTTPS 仓库需要身份验证，而 CompanyOps Agent 作为 Windows 服务不会弹出 Git 登录窗口。
+
+处理只需三步：
+
+1. 在项目卡片点击“仓库凭据”；
+2. 输入对该仓库具有只读权限的用户名和私人令牌，点击“安全保存”；
+3. 关闭窗口后重新点击“检查更新”。
+
+不得把令牌拼进 Git URL，也不得写入 `ops/project-manifest.json`。凭据由 Agent 使用 Windows DPAPI 加密保存在主机数据目录，文件只允许 LocalSystem 和本机管理员访问；失败的“检查更新”不会停止服务或修改项目工作树。
+
+### 17.2 Git 被重写到失效镜像
 
 如果输入的是 `https://github.com/...`，错误里却出现 `mirror.ghproxy.com` 或其他镜像域名，说明本机 Git 配置了 URL 重写，不是仓库地址写错。
 
@@ -1602,7 +1629,7 @@ idempotencyKey：
 3. 接入一个单 Windows Service 项目的 ProjectManifest 和 Binding；
 4. 完成 catalog、projects 和 Plan；
 5. 使用已存在的 Windows Service 完成入口切换、健康失败恢复和状态提交失败恢复现场 UAT；
-6. 修复 CLI 分命令超时或补齐 Console 部署页面；
+6. 分别通过 Console 部署页面和 CLI 提交受控 Plan，核对 generation、固定幂等键与 audit；
 7. 对一个项目完成 Install、Update、失败恢复和 Rollback 演练；
 8. 按实际项目需要补齐 Secret Provider、数据库备份/迁移和平台升级器；
 9. 完成真实账号、权限、DPI、浏览器和业务 UAT；

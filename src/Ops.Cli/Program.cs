@@ -2,12 +2,27 @@ using System.IO.Pipes;
 using System.Text.Json;
 using CompanyOps.Contracts;
 
-var command = args.FirstOrDefault(
-                  static argument => !argument.StartsWith("--", StringComparison.Ordinal))
-              ?? "inventory";
+var command = ReadCommand(args) ?? "inventory";
 var pipeName = ReadOption(args, "--pipe")
                ?? Environment.GetEnvironmentVariable("COMPANYOPS_PIPE_NAME")
                ?? "CompanyOps.Agent.v1";
+var defaultTimeout = command switch
+{
+    "deploy" => TimeSpan.FromMinutes(10),
+    "operate" => TimeSpan.FromMinutes(2),
+    _ => TimeSpan.FromSeconds(10)
+};
+var timeoutText = ReadOption(args, "--timeout-seconds");
+if (timeoutText is not null &&
+    (!int.TryParse(timeoutText, out var configuredTimeoutSeconds) || configuredTimeoutSeconds is < 1 or > 1800))
+{
+    Console.Error.WriteLine("--timeout-seconds 必须是 1 到 1800 之间的整数。");
+    return 2;
+}
+
+var commandTimeout = timeoutText is null
+    ? defaultTimeout
+    : TimeSpan.FromSeconds(int.Parse(timeoutText, System.Globalization.CultureInfo.InvariantCulture));
 
 var transportJsonOptions = AgentProtocol.CreateJsonSerializerOptions();
 var displayJsonOptions = AgentProtocol.CreateJsonSerializerOptions(writeIndented: true);
@@ -49,7 +64,7 @@ using var pipe = new NamedPipeClientStream(
     PipeDirection.InOut,
     PipeOptions.Asynchronous,
     System.Security.Principal.TokenImpersonationLevel.Identification);
-using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+using var timeout = new CancellationTokenSource(commandTimeout);
 
 try
 {
@@ -78,7 +93,8 @@ try
 }
 catch (OperationCanceledException)
 {
-    Console.Error.WriteLine($"连接 Named Pipe {pipeName} 超时。");
+    Console.Error.WriteLine(
+        $"命令 {command} 在 {commandTimeout.TotalSeconds:0} 秒内未完成；先查询 audit 和目标状态，不要盲目更换幂等键重试。");
     return 2;
 }
 catch (IOException exception)
@@ -95,6 +111,22 @@ static string? ReadOption(string[] arguments, string optionName)
         {
             return arguments[index + 1];
         }
+    }
+
+    return null;
+}
+
+static string? ReadCommand(string[] arguments)
+{
+    for (var index = 0; index < arguments.Length; index++)
+    {
+        if (arguments[index].StartsWith("--", StringComparison.Ordinal))
+        {
+            index++;
+            continue;
+        }
+
+        return arguments[index];
     }
 
     return null;

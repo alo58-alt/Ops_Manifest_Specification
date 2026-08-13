@@ -111,6 +111,34 @@
           "minimum": 2,
           "maximum": 10,
           "default": 2
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "remote",
+            "branch",
+            "remoteUrl"
+          ],
+          "properties": {
+            "kind": {
+              "const": "gitFastForward"
+            },
+            "remote": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+            },
+            "branch": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$"
+            },
+            "remoteUrl": {
+              "type": "string",
+              "pattern": "^https://[^@/]+/.+$",
+              "maxLength": 500
+            }
+          }
         }
       }
     }
@@ -210,6 +238,14 @@
             "kind": {
               "const": "fileHeartbeat"
             },
+            "rootRef": {
+              "enum": [
+                "install",
+                "data",
+                "logs"
+              ],
+              "default": "data"
+            },
             "path": {
               "$ref": "#/definitions/relativePath"
             },
@@ -217,6 +253,18 @@
               "type": "integer",
               "minimum": 5,
               "maximum": 3600
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "interactiveProcess"
             }
           }
         }
@@ -245,7 +293,8 @@
             "iisSite",
             "staticSite",
             "scheduledTask",
-            "pm2Legacy"
+            "pm2Legacy",
+            "interactiveApp"
           ]
         },
         "entrypoint": {
@@ -530,6 +579,76 @@
                     },
                     "script": {
                       "$ref": "#/definitions/relativePath"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/componentBase"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "interactive"
+              ],
+              "properties": {
+                "id": true,
+                "displayName": true,
+                "kind": {
+                  "const": "interactiveApp"
+                },
+                "entrypoint": true,
+                "dependsOn": true,
+                "health": true,
+                "interactive": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "executable",
+                    "workingDirectory",
+                    "startPolicy"
+                  ],
+                  "properties": {
+                    "executable": {
+                      "allOf": [
+                        { "$ref": "#/definitions/relativePath" },
+                        { "pattern": "(?i)\\.exe$" }
+                      ]
+                    },
+                    "workingDirectory": {
+                      "$ref": "#/definitions/relativePath"
+                    },
+                    "arguments": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "pattern": "^[^\\r\\n\\u0000]*$"
+                      },
+                      "default": []
+                    },
+                    "startPolicy": {
+                      "enum": [
+                        "manual",
+                        "userLogon"
+                      ]
+                    },
+                    "stopTimeoutSeconds": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 60,
+                      "default": 10
+                    },
+                    "allowForceTerminate": {
+                      "type": "boolean",
+                      "default": false
                     }
                   }
                 }

@@ -43,7 +43,7 @@ PM2 Agent 不直接执行 `jlist`；只有 owner 用户下的 Bridge 生成缩�
 
 MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提供方和破坏性变更仍属于后续受控能力，不得把文件回滚当作数据库回滚。
 
-自动化只使用假入口和假控制适配器，没有修改本机真实 SCM。正式生产写入仍需在试点主机完成单 Windows Service 的 Install、Update、健康失败恢复和 Rollback 现场演练。
+自动化使用假入口、假控制适配器和临时状态目录，没有修改本机真实 SCM、NSSM 或用户进程。正式生产写入仍需在试点主机完成 Windows Service + interactiveApp 的 Install、Update、健康失败恢复和 Rollback 现场演练。
 
 ## M4：Ops Console — 已完成 MVP
 
@@ -51,10 +51,11 @@ MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提�
 - 仅绑定 `127.0.0.1`，Windows Negotiate；
 - reader/operator/admin、Allowlist、CSRF 和浏览器安全头；
 - 项目、组件、版本、归属、健康和审计；
+- 受控 Plan / Install / Update / Rollback 表单，明示本机路径、generation 和固定幂等键；
 - 高风险确认与按钮级禁用，Agent 仍执行独立服务端校验；
 - 无远程 shell、无任意命令接口。
 
-浏览器验收已覆盖真实 Windows 身份、只读角色、刷新、项目/审计数据和 390×844 视口；真实 operator 控制没有在本机执行。
+既有浏览器验收已覆盖真实 Windows 身份、只读角色、刷新、项目/审计数据和 390×844 视口；新增部署表单已通过 TypeScript/Vite 生产构建，但真实 operator 提交和试点主机写入尚未执行。
 
 ## 下一阶段（不阻塞 MVP 代码交付）
 
@@ -62,6 +63,7 @@ MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提�
 - 数据库备份/迁移提供方、日志分页/流式进度；
 - HTTPS 反向代理或企业内网远程 Console（当前只允许本机）；
 - Agent/Console 签名安装包、升级策略和灾备演练；
+- 跨进程持久化激活日志与 Agent 启动恢复，封住断电或进程崩溃窗口；
 - IIS/静态站点/任务计划的专用发布激活器。
 
 多主机编排、HA 和集中身份平台不是当前阶段目标；每台主机独立部署 Agent 与本机 Console 即满足当前范围。

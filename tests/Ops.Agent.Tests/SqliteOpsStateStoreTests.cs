@@ -1,6 +1,7 @@
 using CompanyOps.Agent.Persistence;
 using CompanyOps.Contracts;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace CompanyOps.Agent.Tests;
 
@@ -17,7 +18,8 @@ public sealed class SqliteOpsStateStoreTests
             "test",
             "read-only",
             "succeeded",
-            "测试事件");
+            "测试事件",
+            JsonSerializer.SerializeToElement(new { operationId = "test-operation", steps = new[] { "预检", "完成" } }));
 
         await store.InitializeAsync(CancellationToken.None);
         await store.AppendAuditEventAsync(auditEvent, CancellationToken.None);
@@ -38,6 +40,7 @@ public sealed class SqliteOpsStateStoreTests
         var actual = Assert.Single(events);
         Assert.Equal(auditEvent.EventId, actual.EventId);
         Assert.Equal("read-only", actual.Action);
+        Assert.Equal("test-operation", actual.Data?.GetProperty("operationId").GetString());
         Assert.True(File.Exists(Path.Combine(testDirectory.FullPath, "ops-agent.db")));
     }
 

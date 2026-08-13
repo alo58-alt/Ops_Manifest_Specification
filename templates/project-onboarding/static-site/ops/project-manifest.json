@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "change-me-static-site",
+    "displayName": "请替换项目名称",
+    "description": "请替换项目说明",
+    "owners": [
+      "change-me-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "web",
+      "displayName": "静态站点",
+      "kind": "staticSite",
+      "entrypoint": "web-dist",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "web-http",
+          "path": "/health.html",
+          "expectedStatus": 200,
+          "timeoutSeconds": 2
+        }
+      ],
+      "site": {
+        "defaultDocument": "index.html",
+        "spaFallback": true
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "web-http",
+      "componentId": "web",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 8080,
+      "exposure": "lan"
+    }
+  ],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

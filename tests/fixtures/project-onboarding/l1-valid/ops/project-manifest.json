@@ -1,0 +1,63 @@
+{
+  "$schema": "../../../../../spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "onboarding-fixture",
+    "displayName": "接入验收样例",
+    "description": "用于验证项目接入材料验收脚本",
+    "owners": [
+      "platform-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "api",
+      "displayName": "样例 API",
+      "kind": "windowsService",
+      "entrypoint": "api-main",
+      "dependsOn": [],
+      "health": [
+        {
+          "kind": "http",
+          "portRef": "api-http",
+          "path": "/health",
+          "expectedStatus": 200,
+          "expectJson": {
+            "status": "ok"
+          },
+          "timeoutSeconds": 2
+        }
+      ],
+      "service": {
+        "startMode": "delayed",
+        "failureRestartLimit": 3
+      }
+    }
+  ],
+  "ports": [
+    {
+      "id": "api-http",
+      "componentId": "api",
+      "protocol": "tcp",
+      "allocation": "fixed",
+      "preferredPort": 19201,
+      "exposure": "loopback"
+    }
+  ],
+  "configuration": [],
+  "dataDirectories": [
+    {
+      "id": "runtime-data",
+      "componentId": "api",
+      "purpose": "业务持久数据",
+      "backupTier": "standard"
+    }
+  ],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "healthTimeoutSeconds": 60,
+    "retainReleaseCount": 2
+  }
+}

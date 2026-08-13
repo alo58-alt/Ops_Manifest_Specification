@@ -17,6 +17,7 @@ public sealed class OperationCoordinator
     private readonly OpsOptions _options;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly IComponentHealthGate _healthGate;
+    private readonly IOperationSnapshotRefresher _snapshotRefresher;
     private readonly ConcurrentDictionary<string, IdempotentOperation> _operations =
         new(StringComparer.Ordinal);
 
@@ -26,6 +27,7 @@ public sealed class OperationCoordinator
         OperationGate gate,
         IEnumerable<IComponentControlAdapter> adapters,
         IComponentHealthGate healthGate,
+        IOperationSnapshotRefresher snapshotRefresher,
         IOptions<OpsOptions> options,
         JsonSerializerOptions jsonOptions)
     {
@@ -35,6 +37,7 @@ public sealed class OperationCoordinator
         _options = options.Value;
         _jsonOptions = jsonOptions;
         _healthGate = healthGate;
+        _snapshotRefresher = snapshotRefresher;
         _adapters = adapters.ToDictionary(static adapter => adapter.Kind, StringComparer.Ordinal);
     }
 
@@ -71,7 +74,7 @@ public sealed class OperationCoordinator
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
-        if (!_options.EnableMutations)
+        if (!_options.EnableMutations && !_options.EnableExistingServiceOperations)
         {
             return await AuditAndReturnAsync(
                 Rejected(request, "mutations_disabled", "Agent 未启用变更操作", startedAt),
@@ -79,6 +82,15 @@ public sealed class OperationCoordinator
         }
 
         var snapshot = _snapshotCache.Read();
+        if (snapshot.Catalog is null)
+        {
+            return await AuditAndReturnAsync(
+                Rejected(request, "catalog_not_ready", "Manifest 清单尚未就绪", startedAt),
+                cancellationToken);
+        }
+
+        await _snapshotRefresher.RefreshAsync(cancellationToken);
+        snapshot = _snapshotCache.Read();
         var project = snapshot.Projects?.Projects.SingleOrDefault(
             item =>
                 string.Equals(item.ProjectId, request.ProjectId, StringComparison.Ordinal) &&
@@ -87,6 +99,21 @@ public sealed class OperationCoordinator
         {
             return await AuditAndReturnAsync(
                 Rejected(request, "project_not_found", "未找到唯一项目环境", startedAt),
+                cancellationToken);
+        }
+
+        if (!_options.EnableMutations &&
+            (project.Status != ProjectBindingStatus.Declared ||
+             project.Components.Any(component =>
+                 component.Kind != "windowsService" &&
+                 (component.Kind != "interactiveApp" || !_options.EnableInteractiveSessionOperations))))
+        {
+            return await AuditAndReturnAsync(
+                Rejected(
+                    request,
+                    "existing_service_control_only",
+                    "当前主机只启用了已接入 Windows Service 和用户会话交互程序的启停能力；部署、IIS、任务和 PM2 仍保持关闭",
+                    startedAt),
                 cancellationToken);
         }
 
@@ -140,6 +167,10 @@ public sealed class OperationCoordinator
 
             if (step.Action is ComponentOperationAction.Start or ComponentOperationAction.Restart)
             {
+                if (step.Target.Kind == "interactiveApp")
+                {
+                    await _snapshotRefresher.RefreshAsync(cancellationToken);
+                }
                 var health = await _healthGate.ProbeAsync(
                     request.ProjectId,
                     request.Environment,
@@ -159,6 +190,14 @@ public sealed class OperationCoordinator
                 }
             }
         }
+
+        await _snapshotRefresher.RefreshAsync(cancellationToken);
+        completed.Add(new ComponentOperationStep(
+            request.ComponentId,
+            nameof(OperationSnapshotRefresher),
+            "Refresh",
+            "succeeded",
+            "已重新盘点服务状态与声明式健康"));
 
         return await AuditAndReturnAsync(
             new ComponentOperationResult(
@@ -286,6 +325,7 @@ public sealed class OperationCoordinator
             component.ComponentId,
             component.Kind,
             component.Kind == "pm2Legacy" ? component.ExpectedNativeId : component.InstalledNativeId!,
+            project.InstallRoot,
             pmId);
     }
 

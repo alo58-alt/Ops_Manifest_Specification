@@ -68,7 +68,23 @@ public sealed class DeploymentEngine(
         DeploymentRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await ExecuteCoreAsync(request, cancellationToken);
+        DeploymentResult result;
+        try
+        {
+            result = await ExecuteCoreAsync(request, cancellationToken);
+        }
+        catch (OperationCanceledException exception)
+        {
+            result = Reject(request, "deployment_cancelled", exception.Message);
+        }
+        catch (Exception exception)
+        {
+            result = Reject(
+                request,
+                "deployment_unhandled_failure",
+                $"{exception.GetType().Name}: {exception.Message}");
+        }
+
         if (!_auditedOperations.ContainsKey(result.OperationId))
         {
             using var auditTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -157,19 +173,23 @@ public sealed class DeploymentEngine(
             return Reject(request, "release_path_exists", "staging 或目标 release 已存在，拒绝覆盖", steps);
         }
 
-        var reservation = await portRegistry.ReserveAsync(context.Ports, cancellationToken);
-        if (!reservation.Success)
-        {
-            return Reject(request, reservation.ErrorCode ?? "port_reservation_failed", reservation.Detail ?? "端口预留失败", steps);
-        }
-
-        steps.Add("端口批量事务预留成功");
         var stagingPath = context.StagingPath;
         DeploymentActivationResult? activation = null;
         var pointerSnapshot = CaptureFile(Path.Combine(context.InstallRoot, "current.release.json"));
         var installedStateSnapshot = CaptureFile(InstalledStatePath(request.ProjectId, request.Environment));
         try
         {
+            var reservation = await portRegistry.ReserveAsync(context.Ports, cancellationToken);
+            if (!reservation.Success)
+            {
+                return Reject(
+                    request,
+                    reservation.ErrorCode ?? "port_reservation_failed",
+                    reservation.Detail ?? "端口预留失败",
+                    steps);
+            }
+
+            steps.Add("端口批量事务预留成功");
             Directory.CreateDirectory(stagingPath);
             foreach (var artifact in validation.Artifacts)
             {
@@ -212,23 +232,37 @@ public sealed class DeploymentEngine(
             await AuditAsync(result, cancellationToken);
             return result;
         }
-        catch (Exception exception) when (
-            exception is OperationCanceledException or IOException or UnauthorizedAccessException or
-                InvalidDataException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+        catch (Exception exception)
         {
             using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var cleanupToken = cancellationToken.IsCancellationRequested ? cleanupTimeout.Token : cancellationToken;
+            var cleanupToken = cleanupTimeout.Token;
             var recoveryDetails = new List<string>();
             if (activation?.Rollback is not null)
             {
-                var restored = await activation.Rollback.RestoreAsync(cleanupToken);
+                var restored = await RestoreActivationSafelyAsync(activation.Rollback, cleanupToken);
                 recoveryDetails.Add($"原生入口恢复{(restored.Success ? "成功" : "失败")}：{restored.Detail}");
             }
 
-            recoveryDetails.Add(await RestoreFileAsync(pointerSnapshot, cleanupToken));
-            recoveryDetails.Add(await RestoreFileAsync(installedStateSnapshot, cleanupToken));
-            await QuarantineFailedReleaseAsync(context, request.OperationId);
-            await portRegistry.ReleaseOperationAsync(request.OperationId, cleanupToken);
+            recoveryDetails.Add(await RunRecoveryStepAsync(
+                "release pointer 恢复",
+                () => RestoreFileAsync(pointerSnapshot, cleanupToken)));
+            recoveryDetails.Add(await RunRecoveryStepAsync(
+                "InstalledState 恢复",
+                () => RestoreFileAsync(installedStateSnapshot, cleanupToken)));
+            recoveryDetails.Add(await RunRecoveryStepAsync(
+                "失败 release 隔离",
+                async () =>
+                {
+                    await QuarantineFailedReleaseAsync(context, request.OperationId);
+                    return "失败 release 已隔离";
+                }));
+            recoveryDetails.Add(await RunRecoveryStepAsync(
+                "端口预留释放",
+                async () =>
+                {
+                    await portRegistry.ReleaseOperationAsync(request.OperationId, cleanupToken);
+                    return "端口预留已释放";
+                }));
             steps.AddRange(recoveryDetails);
             var result = Reject(
                 request,
@@ -285,11 +319,24 @@ public sealed class DeploymentEngine(
         var currentVersion = pointer["currentVersion"]?.GetValue<string>();
         var previousVersion = pointer["previousVersion"]?.GetValue<string>();
         var previousPath = pointer["previousPath"]?.GetValue<string>();
-        if (string.IsNullOrWhiteSpace(previousVersion) || string.IsNullOrWhiteSpace(previousPath) ||
-            !IsUnderRoot(previousPath, Path.Combine(installRoot, "releases")) || !Directory.Exists(previousPath))
+        if (string.IsNullOrWhiteSpace(previousVersion) || !SafeSegment(previousVersion) ||
+            string.IsNullOrWhiteSpace(previousPath))
         {
             return Reject(request, "rollback_unavailable", "上一版本路径缺失或不可信");
         }
+
+        var expectedPreviousPath = Path.GetFullPath(Path.Combine(installRoot, "releases", previousVersion));
+        if (!IsUnderRoot(previousPath, Path.Combine(installRoot, "releases")) ||
+            !string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(previousPath)),
+                Path.TrimEndingDirectorySeparator(expectedPreviousPath),
+                StringComparison.OrdinalIgnoreCase) ||
+            !Directory.Exists(expectedPreviousPath))
+        {
+            return Reject(request, "rollback_unavailable", "上一版本路径不等于受控版本目录或目录不存在");
+        }
+
+        previousPath = expectedPreviousPath;
 
         var previousManifestPath = Path.Combine(previousPath, ".companyops", "release-manifest.json");
         var previousProjectManifestPath = Path.Combine(previousPath, ".companyops", "project-manifest.json");
@@ -346,6 +393,8 @@ public sealed class DeploymentEngine(
             return Reject(request, "resource_busy", "项目正在执行其他操作");
         }
 
+        var pointerSnapshot = CaptureFile(pointerPath);
+        var installedStateSnapshot = CaptureFile(InstalledStatePath(request.ProjectId, request.Environment));
         var activation = await activator.ActivateAsync(activationRequest, cancellationToken);
         if (!activation.Success)
         {
@@ -363,8 +412,6 @@ public sealed class DeploymentEngine(
             currentVersion,
             [],
             null);
-        var pointerSnapshot = CaptureFile(pointerPath);
-        var installedStateSnapshot = CaptureFile(InstalledStatePath(request.ProjectId, request.Environment));
         try
         {
             await WriteReleasePointerAsync(context, previousVersion, cancellationToken, currentVersion);
@@ -384,17 +431,19 @@ public sealed class DeploymentEngine(
             await AuditAsync(result, cancellationToken);
             return result;
         }
-        catch (Exception exception) when (
-            exception is OperationCanceledException or IOException or UnauthorizedAccessException or
-                InvalidDataException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+        catch (Exception exception)
         {
             using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var cleanupToken = cancellationToken.IsCancellationRequested ? cleanupTimeout.Token : cancellationToken;
+            var cleanupToken = cleanupTimeout.Token;
             var restored = activation.Rollback is null
                 ? new DeploymentActivationResult(false, "激活器未返回可恢复事务")
-                : await activation.Rollback.RestoreAsync(cleanupToken);
-            var pointerRestore = await RestoreFileAsync(pointerSnapshot, cleanupToken);
-            var stateRestore = await RestoreFileAsync(installedStateSnapshot, cleanupToken);
+                : await RestoreActivationSafelyAsync(activation.Rollback, cleanupToken);
+            var pointerRestore = await RunRecoveryStepAsync(
+                "release pointer 恢复",
+                () => RestoreFileAsync(pointerSnapshot, cleanupToken));
+            var stateRestore = await RunRecoveryStepAsync(
+                "InstalledState 恢复",
+                () => RestoreFileAsync(installedStateSnapshot, cleanupToken));
             var result = Reject(
                 request,
                 exception is OperationCanceledException ? "rollback_cancelled" : "rollback_state_commit_failed",
@@ -577,6 +626,7 @@ public sealed class DeploymentEngine(
                 "windowsService" => "scm",
                 "iisSite" or "staticSite" => "iis",
                 "scheduledTask" => "taskScheduler",
+                "interactiveApp" => "interactiveSession",
                 _ => "pm2Legacy"
             };
             components.Add(new JsonObject
@@ -762,6 +812,36 @@ public sealed class DeploymentEngine(
         File.Exists(path)
             ? new FileSnapshot(path, true, File.ReadAllBytes(path))
             : new FileSnapshot(path, false, null);
+
+    private static async Task<DeploymentActivationResult> RestoreActivationSafelyAsync(
+        IDeploymentActivationRollback rollback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await rollback.RestoreAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return new DeploymentActivationResult(
+                false,
+                $"恢复过程异常 {exception.GetType().Name}：{exception.Message}");
+        }
+    }
+
+    private static async Task<string> RunRecoveryStepAsync(
+        string label,
+        Func<Task<string>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (Exception exception)
+        {
+            return $"{label}失败（{exception.GetType().Name}）：{exception.Message}";
+        }
+    }
 
     private static async Task<string> RestoreFileAsync(
         FileSnapshot snapshot,

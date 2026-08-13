@@ -45,7 +45,7 @@ Agent 生产配置至少明确：
 }
 ```
 
-首次上线保持 `EnableMutations=false`，完成只读盘点、归属解释和冲突修正后，再针对试点主机单独变更。`AllowedProjectInstallRoots` 是主机管理员批准的项目父目录；每个 `EnvironmentBinding.roots.install` 必须是其中某一项的子目录，不能直接等于共享父目录或盘符根目录。未配置时 `Plan` 和所有部署写入失败关闭。
+首次上线保持 `EnableMutations=false`，完成只读盘点、归属解释和冲突修正后，再针对试点主机单独变更。`AllowedProjectInstallRoots` 是主机管理员批准的项目父目录；每个 `EnvironmentBinding.roots.install` 必须是其中某一项的子目录，不能直接等于共享父目录或盘符根目录，不同项目的安装目录也不能相同或互相嵌套。未配置时 `Plan` 和所有部署写入失败关闭。
 
 发布与首次安装脚本默认都不触碰现有业务服务：
 
@@ -98,6 +98,8 @@ companyops operate --data-file .\operation.json
 companyops deploy --data-file .\deployment.json
 ```
 
+CLI 默认超时为：`deploy` 10 分钟、`operate` 2 分钟、其他命令 10 秒；仅在受审场景使用 `--timeout-seconds <1-1800>` 覆盖。任何超时都先查 `audit` 和真实资源状态，不得更换幂等键盲目重试。
+
 `operate` 示例：
 
 ```json
@@ -116,15 +118,17 @@ companyops deploy --data-file .\deployment.json
 
 ## 5. 发布与回滚语义
 
-- `Plan` 校验 ReleaseManifest、目标架构、最低 Agent 版本、ProjectManifest SHA-256、项目 generation 和发布激活能力，不修改系统；
+- `Plan` 校验 ReleaseManifest、目标架构、最低 Agent 版本、ProjectManifest SHA-256、项目 generation 和发布激活能力，并只读确认每个 Windows Service 或 interactiveApp 的精确入口与可迁移状态，不修改系统；
 - `Install/Update` 先原子预留端口，再解包到 `.staging/<operationId>`；
 - ZIP 每个目标必须位于 staging 内，禁止覆盖已有 release；
-- Windows Service 发布先对全部服务做精确预检，再按反向依赖停止、切换 SCM `ImagePath`、按依赖启动并复核声明式健康；
+- 发布先对全部组件做精确预检，再按反向依赖停止、切换声明式入口、按依赖启动并复核声明式健康；原生服务切换 SCM `ImagePath`，NSSM 服务切换其应用入口，interactiveApp 切换 Session Agent 共享的当前入口状态；
 - 原生入口与健康全部通过后，才提交 pointer、InstalledState 和端口；状态提交失败时恢复旧入口、原运行状态和旧状态文件；
 - 失败 release 移入 `.failed/<operationId>`，便于取证，不覆盖旧版本；
 - `Rollback` 只接受 pointer 记录、仍位于本项目 `releases` 根下且内嵌 ReleaseManifest/ProjectManifest 哈希可信的上一版本。
 
-当前只有已存在 Windows Service 具备发布激活代码闭环；不自动创建服务。IIS、静态站点、Task Scheduler 和 PM2 发布会在 `Plan` 阶段失败关闭，其既有资源启停仍走独立白名单适配器。数据库变更必须另行设计备份/兼容性策略。
+当前已存在 Windows Service（含 NSSM 承载）与 interactiveApp 具备发布激活代码闭环；不自动创建服务或执行项目脚本。IIS、静态站点、Task Scheduler 和 PM2 发布会在 `Plan` 阶段失败关闭，其既有资源启停仍走独立白名单适配器。数据库变更必须另行设计备份/兼容性策略。
+
+当前恢复保证覆盖受控异常、取消、健康失败以及 pointer / InstalledState / 端口提交失败；主机断电或 Agent 进程在入口切换与状态提交之间崩溃时，尚无跨进程持久化激活日志。该能力完成前只允许有人值守维护窗口，必须预先留存旧 SCM `ImagePath` 和状态文件恢复点。
 
 ## 6. 现场验收清单
 
@@ -136,7 +140,7 @@ companyops deploy --data-file .\deployment.json
 - [ ] 试点组件精确 start/stop/restart，不影响其他项目；
 - [ ] 依赖或健康失败时后续步骤停止；
 - [ ] 更新失败保留旧 pointer，失败 release 被隔离；
-- [ ] Windows Service `ImagePath` 写入后回读一致，失败时旧入口和原运行状态恢复；
+- [ ] Windows Service 的 SCM/NSSM 入口与 interactiveApp 当前入口写入后回读一致，失败时旧入口和原运行状态恢复；
 - [ ] Rollback 后健康重新通过；
 - [ ] 审计包含同一 operationId、动作和结果；
 - [ ] 业务负责人完成真实 UAT。

@@ -40,11 +40,18 @@ ProjectManifest 包含：
 
 组件依赖必须引用同一项目内存在的组件，不得自依赖或形成环。`pm2Legacy` 必须提供精确名称、cwd 和 script，供 Agent 做唯一归属校验。
 
+`interactiveApp` 必须声明项目内相对 `.exe`、相对工作目录、`manual|userLogon` 启动策略和可选的参数数组。主机 `EnvironmentBinding.interactiveSession` 单独绑定 owner SID、缩减快照和控制管道；这些主机事实不得提交回项目仓库。
+`interactiveApp` 的健康声明至少包含一个 `interactiveProcess`，它由当前用户 Session Agent 的唯一进程快照支持，不依赖 Session 0 中的进程猜测。
+
+`update.source` 是可选的 L3 Git 快进声明。声明后必须固定 `kind=gitFastForward`、远端名称、分支和无凭据 HTTPS URL；它只授权 Agent 读取和快进该精确来源，不授权任意 shell、分支切换、强制覆盖或清理未跟踪文件。`rollbackOnFailure` 必须为 `true` 才能执行 Git 更新。
+
 ## 4. ReleaseManifest
 
 ReleaseManifest 由构建过程生成，不由现场人工编辑。每个制品至少包含文件名、字节数和 64 位小写 SHA-256。组件载荷只能引用已声明的制品，并给出制品内部相对路径；禁止盘符、UNC 和父目录跳转。
 
-`projectManifestSha256` 必须是本次构建所使用 ProjectManifest 原始文件字节的 SHA-256；Agent 会在 `Plan` 阶段与当前唯一声明精确比对。当前 Windows Service 激活器只解析启动参数中的 `${PORT_<PORT_ID>}`，其中连字符转换为下划线，例如 `api-http` 对应 `${PORT_API_HTTP}`；未知、Secret 或未绑定占位符失败关闭。Windows Service 的 `workingDirectory` 如存在，只能等于入口文件所在目录，且服务本身仍应以 `AppContext.BaseDirectory` 等可靠基准解析资源。
+`projectManifestSha256` 必须是本次构建所使用 ProjectManifest 原始文件字节的 SHA-256；Agent 会在 `Plan` 阶段与当前唯一声明精确比对。通用激活器只解析 `${ROOT_INSTALL}`、`${ROOT_DATA}`、`${ROOT_LOGS}` 与 `${PORT_<PORT_ID>}`，其中端口 ID 的连字符转换为下划线，例如 `api-http` 对应 `${PORT_API_HTTP}`；未知、Secret 或未绑定占位符失败关闭。Windows Service 的 `workingDirectory` 如存在，只能等于入口文件所在目录，且程序必须把持久数据与版本化入口分离。
+
+`fileHeartbeat.rootRef` 可选为 `install|data|logs`，省略时兼容为 `data`；`path` 始终是所选绑定根目录内的安全相对路径。`interactiveProcess` 必须从当前绑定用户的最新 Session Agent 快照中精确匹配一个 EXE、工作目录和参数，不能仅因控制请求已返回成功而判定健康。
 
 同一项目版本一旦发布，其 ReleaseManifest 和制品必须不可变。需要修复时发布新版本，不能替换旧版本同名 ZIP。
 

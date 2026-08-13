@@ -14,11 +14,21 @@ public sealed class OpsOptions
 
     public string Pm2SnapshotDirectory { get; set; } = string.Empty;
 
+    public string InteractiveSnapshotDirectory { get; set; } = string.Empty;
+
     public string PipeName { get; set; } = "CompanyOps.Agent.v1";
 
     public int InventoryIntervalSeconds { get; set; } = 30;
 
     public bool EnableMutations { get; set; }
+
+    public bool EnableExistingServiceOperations { get; set; } = true;
+
+    public bool EnableInteractiveSessionOperations { get; set; } = true;
+
+    public bool EnableExistingGitUpdates { get; set; } = true;
+
+    public string GitExecutablePath { get; set; } = string.Empty;
 
     public string[] AllowedProjectInstallRoots { get; set; } = [];
 
@@ -70,6 +80,7 @@ public sealed record ResolvedOpsPaths(
     string StateDirectory,
     string StateDatabasePath,
     string Pm2SnapshotDirectory,
+    string InteractiveSnapshotDirectory,
     string SchemaDirectory);
 
 public sealed class OpsPathResolver(IOptions<OpsOptions> options)
@@ -89,6 +100,9 @@ public sealed class OpsPathResolver(IOptions<OpsOptions> options)
         var pm2SnapshotDirectory = ResolveAbsolutePath(
             _options.Pm2SnapshotDirectory,
             Path.Combine(stateDirectory, "pm2-snapshots"));
+        var interactiveSnapshotDirectory = ResolveAbsolutePath(
+            _options.InteractiveSnapshotDirectory,
+            Path.Combine(stateDirectory, "interactive-snapshots"));
 
         var hostId = string.IsNullOrWhiteSpace(_options.HostId)
             ? Environment.MachineName
@@ -100,6 +114,7 @@ public sealed class OpsPathResolver(IOptions<OpsOptions> options)
             stateDirectory,
             Path.Combine(stateDirectory, "ops-agent.db"),
             pm2SnapshotDirectory,
+            interactiveSnapshotDirectory,
             Path.Combine(AppContext.BaseDirectory, "schemas"));
     }
 

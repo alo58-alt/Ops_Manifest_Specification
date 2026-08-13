@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.ServiceProcess;
 using CompanyOps.Contracts;
+using Microsoft.Win32;
 
 namespace CompanyOps.Agent.Operations;
 
@@ -36,6 +37,18 @@ public sealed class WindowsServiceControlAdapter : IComponentControlAdapter
         using var service = matches[0];
         try
         {
+            var binaryPath = Deployment.WindowsServiceConfiguration.QueryBinaryPath(service.ServiceName);
+            if (!ExecutableBelongsToRoot(binaryPath, target.InstallRoot))
+            {
+                return new AdapterExecutionResult(false, "SCM ImagePath 已变化或不再归属项目目录，拒绝控制");
+            }
+            if (Path.GetFileName(ExtractExecutablePath(binaryPath))
+                    .Equals("nssm.exe", StringComparison.OrdinalIgnoreCase) &&
+                !NssmParametersBelongToRoot(service.ServiceName, target.InstallRoot))
+            {
+                return new AdapterExecutionResult(false, "NSSM 参数已变化或不再归属项目目录，拒绝控制");
+            }
+
             if (action is ComponentOperationAction.Stop or ComponentOperationAction.Restart)
             {
                 service.Refresh();
@@ -90,6 +103,68 @@ public sealed class WindowsServiceControlAdapter : IComponentControlAdapter
         !string.IsNullOrWhiteSpace(value) &&
         value.Length <= 256 &&
         value.All(static character => !char.IsControl(character));
+
+    private static bool ExecutableBelongsToRoot(string commandLine, string? installRoot)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine) || string.IsNullOrWhiteSpace(installRoot))
+        {
+            return false;
+        }
+
+        try
+        {
+            var executable = ExtractExecutablePath(commandLine);
+            var fullExecutable = Path.GetFullPath(executable);
+            var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+            return fullExecutable.StartsWith(
+                fullRoot + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static string ExtractExecutablePath(string commandLine)
+    {
+        var value = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+        if (value.StartsWith('"'))
+        {
+            var closingQuote = value.IndexOf('"', 1);
+            return closingQuote > 1 ? value[1..closingQuote] : string.Empty;
+        }
+
+        var executableEnd = value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return executableEnd >= 0 ? value[..(executableEnd + 4)] : value.Split(' ', 2)[0];
+    }
+
+    private static bool NssmParametersBelongToRoot(string serviceName, string? installRoot)
+    {
+        if (string.IsNullOrWhiteSpace(installRoot))
+        {
+            return false;
+        }
+
+        using var parameters = Registry.LocalMachine.OpenSubKey(
+            $@"SYSTEM\CurrentControlSet\Services\{serviceName}\Parameters",
+            writable: false);
+        var application = parameters?.GetValue("Application") as string;
+        var directory = parameters?.GetValue("AppDirectory") as string;
+        var arguments = parameters?.GetValue("AppParameters") as string;
+        try
+        {
+            var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+            return ExecutableBelongsToRoot(application ?? string.Empty, fullRoot) &&
+                   Path.GetFullPath(directory?.Trim().Trim('"') ?? string.Empty).StartsWith(
+                       fullRoot + Path.DirectorySeparatorChar,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 }
 
 public sealed class ScheduledTaskControlAdapter(FixedCommandRunner runner) : IComponentControlAdapter

@@ -27,6 +27,7 @@ public sealed class AgentPipeClient(
         {
             "deploy" => TimeSpan.FromMinutes(10),
             "operate" => TimeSpan.FromMinutes(2),
+            "onboard" => TimeSpan.FromSeconds(30),
             _ => TimeSpan.FromSeconds(10)
         });
         await using var pipe = new NamedPipeClientStream(
