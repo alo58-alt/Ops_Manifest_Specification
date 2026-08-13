@@ -1010,6 +1010,8 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 
 ## 11. 只做部署计划（普通运维到这里为止）
 
+如果项目卡片仍显示旧组件数量，而本次受审版本新增了组件，先把服务器项目目录快进到包含新 `ops\project-manifest.json` 的提交，再在“接入现有项目”中选择原目录重新检查并确认。该刷新只允许新增组件并保留原根目录、原组件 kind 和原生绑定；不会启停业务服务。任何删除、改绑或类型变化必须走单独迁移，不得用重新接入绕过。
+
 保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。
 
 ### 11.1 Console 图形页面（普通运维优先）

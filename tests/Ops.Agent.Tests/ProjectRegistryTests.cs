@@ -25,7 +25,10 @@ public sealed class ProjectRegistryTests
                     "Running",
                     new Dictionary<string, string?>
                     {
-                        ["binaryPath"] = @"C:\CompanyOps\Apps\sample\service.exe"
+                        ["binaryPath"] = @"C:\CompanyOps\Apps\sample\tools\nssm.exe",
+                        ["nssmApplication"] = @"C:\CompanyOps\Apps\sample\.venv\Scripts\python.exe",
+                        ["nssmAppDirectory"] = @"C:\CompanyOps\Apps\sample",
+                        ["nssmAppParameters"] = "-u server.py"
                     })])]);
 
         var snapshot = await registry.BuildAsync(catalog, inventory, CancellationToken.None);
@@ -33,6 +36,60 @@ public sealed class ProjectRegistryTests
         var project = Assert.Single(snapshot.Projects);
         Assert.Equal(ProjectBindingStatus.Installed, project.Status);
         Assert.Equal(ComponentOwnershipStatus.Owned, Assert.Single(project.Components).Ownership);
+    }
+
+    [Fact]
+    public async Task AdditiveDeclaredComponentMissingFromInstalledState_UsesExactRuntimeOwnership()
+    {
+        using var directory = new TestDirectory();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var catalog = await CreateCatalogAsync(directory.FullPath, installedNativeId: "Company.Sample.Api");
+        var projectPath = catalog.Entries.Single(entry => entry.ManifestKind == "ProjectManifest").Path;
+        var bindingPath = catalog.Entries.Single(entry => entry.ManifestKind == "EnvironmentBinding").Path;
+        await File.WriteAllTextAsync(projectPath, """
+            {
+              "manifestKind": "ProjectManifest",
+              "metadata": { "id": "sample", "displayName": "Sample" },
+              "components": [
+                { "id": "api", "displayName": "API", "kind": "windowsService" },
+                { "id": "worker", "displayName": "Worker", "kind": "windowsService" }
+              ]
+            }
+            """, cancellationToken);
+        await File.WriteAllTextAsync(bindingPath, """
+            {
+              "manifestKind": "EnvironmentBinding",
+              "metadata": { "projectId": "sample", "environment": "test", "hostId": "TEST-HOST" },
+              "roots": { "install": "C:\\CompanyOps\\Apps\\sample" },
+              "componentBindings": [
+                { "componentId": "api", "nativeName": "Company.Sample.Api" },
+                { "componentId": "worker", "nativeName": "Company.Sample.Worker" }
+              ]
+            }
+            """, cancellationToken);
+        var inventory = new InventorySnapshot(
+            "TEST-HOST",
+            DateTimeOffset.UtcNow,
+            [new InventorySection(
+                "windows-services",
+                InventorySourceStatus.Available,
+                [
+                    new InventoryItem("Company.Sample.Api", "API", "Running", new Dictionary<string, string?>
+                    {
+                        ["binaryPath"] = @"C:\CompanyOps\Apps\sample\api.exe"
+                    }),
+                    new InventoryItem("Company.Sample.Worker", "Worker", "Running", new Dictionary<string, string?>
+                    {
+                        ["binaryPath"] = @"C:\CompanyOps\Apps\sample\worker.exe"
+                    })
+                ])]);
+
+        var snapshot = await CreateRegistry(directory.FullPath).BuildAsync(catalog, inventory, cancellationToken);
+
+        var project = Assert.Single(snapshot.Projects);
+        Assert.Equal(ProjectBindingStatus.Installed, project.Status);
+        Assert.Equal(2, project.Components.Count);
+        Assert.All(project.Components, component => Assert.Equal(ComponentOwnershipStatus.Owned, component.Ownership));
     }
 
     [Fact]

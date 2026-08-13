@@ -155,10 +155,13 @@ public sealed class WindowsServiceControlAdapter : IComponentControlAdapter
         try
         {
             var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+            var fullDirectory = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(directory?.Trim().Trim('"') ?? string.Empty));
             return ExecutableBelongsToRoot(application ?? string.Empty, fullRoot) &&
-                   Path.GetFullPath(directory?.Trim().Trim('"') ?? string.Empty).StartsWith(
-                       fullRoot + Path.DirectorySeparatorChar,
-                       StringComparison.OrdinalIgnoreCase);
+                   (string.Equals(fullDirectory, fullRoot, StringComparison.OrdinalIgnoreCase) ||
+                    fullDirectory.StartsWith(
+                        fullRoot + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase));
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {

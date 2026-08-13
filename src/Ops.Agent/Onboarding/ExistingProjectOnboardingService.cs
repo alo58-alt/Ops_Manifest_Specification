@@ -411,6 +411,7 @@ public sealed class ExistingProjectOnboardingService(
                     projectId,
                     environment,
                     projectRoot,
+                    manifest,
                     components,
                     binding,
                     problems,
@@ -547,6 +548,7 @@ public sealed class ExistingProjectOnboardingService(
         string projectId,
         string environment,
         string installRoot,
+        JsonObject proposedManifest,
         IReadOnlyList<OnboardingComponentProposal> components,
         JsonObject proposedBinding,
         ICollection<string> problems,
@@ -575,6 +577,11 @@ public sealed class ExistingProjectOnboardingService(
             existingProjectManifestJson = await File.ReadAllTextAsync(
                 projectManifests[0].Entry.Path,
                 cancellationToken);
+            if (!ProjectManifestEvolutionIsSafe(projectManifests[0].Root, proposedManifest))
+            {
+                problems.Add(
+                    $"项目 {projectId} 的新 ProjectManifest 删除了现有组件或改变了组件 kind；拒绝以重新接入替代受控迁移");
+            }
         }
 
         var bindings = documents.Where(item => item.Entry.ManifestKind == "EnvironmentBinding").ToArray();
@@ -595,10 +602,10 @@ public sealed class ExistingProjectOnboardingService(
             proposedBinding["metadata"]!["revision"] = existingRevision;
             if (!JsonNode.DeepEquals(existingBinding, proposedBinding))
             {
-                if (!BindingsDifferOnlyInPorts(existingBinding, proposedBinding))
+                if (!BindingEvolutionIsSafe(existingBinding, proposedBinding))
                 {
                     problems.Add(
-                        $"当前主机已有 {projectId}/{environment} EnvironmentBinding；只允许修正端口，目录或原生资源绑定不同");
+                        $"当前主机已有 {projectId}/{environment} EnvironmentBinding；只允许修正端口或新增保持原绑定不变的组件");
                 }
                 else if (existingRevision == int.MaxValue)
                 {
@@ -657,7 +664,7 @@ public sealed class ExistingProjectOnboardingService(
         return new ExistingManifestDocuments(existingProjectManifestJson, existingBindingJson);
     }
 
-    private static bool BindingsDifferOnlyInPorts(JsonObject existing, JsonObject proposed)
+    private static bool BindingEvolutionIsSafe(JsonObject existing, JsonObject proposed)
     {
         var existingImmutable = existing.DeepClone().AsObject();
         var proposedImmutable = proposed.DeepClone().AsObject();
@@ -665,9 +672,40 @@ public sealed class ExistingProjectOnboardingService(
         proposedImmutable.Remove("portBindings");
         existingImmutable.Remove("interactiveSession");
         proposedImmutable.Remove("interactiveSession");
+        var existingComponents = existingImmutable["componentBindings"]?.AsArray()
+            .OfType<JsonObject>()
+            .ToDictionary(item => item["componentId"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            ?? new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        var proposedComponents = proposedImmutable["componentBindings"]?.AsArray()
+            .OfType<JsonObject>()
+            .ToDictionary(item => item["componentId"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            ?? new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        existingImmutable.Remove("componentBindings");
+        proposedImmutable.Remove("componentBindings");
         existingImmutable["metadata"]!.AsObject().Remove("revision");
         proposedImmutable["metadata"]!.AsObject().Remove("revision");
-        return JsonNode.DeepEquals(existingImmutable, proposedImmutable);
+        return JsonNode.DeepEquals(existingImmutable, proposedImmutable) &&
+               existingComponents.All(pair =>
+                   proposedComponents.TryGetValue(pair.Key, out var proposedComponent) &&
+                   JsonNode.DeepEquals(pair.Value, proposedComponent));
+    }
+
+    private static bool ProjectManifestEvolutionIsSafe(JsonObject existing, JsonObject proposed)
+    {
+        var existingComponents = existing["components"]?.AsArray()
+            .OfType<JsonObject>()
+            .ToDictionary(item => item["id"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            ?? new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        var proposedComponents = proposed["components"]?.AsArray()
+            .OfType<JsonObject>()
+            .ToDictionary(item => item["id"]?.GetValue<string>() ?? string.Empty, StringComparer.Ordinal)
+            ?? new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        return existingComponents.All(pair =>
+            proposedComponents.TryGetValue(pair.Key, out var proposedComponent) &&
+            string.Equals(
+                pair.Value["kind"]?.GetValue<string>(),
+                proposedComponent["kind"]?.GetValue<string>(),
+                StringComparison.Ordinal));
     }
 
     private static bool PortsConflict(JsonObject left, JsonObject right)

@@ -351,10 +351,25 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                     binding,
                     inventory);
             }
-            else if (stateMatches is null || stateMatches.Length != 1 || !Equals(String(state, "kind"), kind))
+            else if (stateMatches is null)
+            {
+                installedNativeId = expectedNativeId;
+                (ownership, detail) = CorrelateRuntime(
+                    kind,
+                    expectedNativeId,
+                    installedNativeId,
+                    component,
+                    binding,
+                    inventory);
+                if (ownership == ComponentOwnershipStatus.Owned)
+                {
+                    detail = "组件由增量声明新增，当前原生资源归属已验证";
+                }
+            }
+            else if (stateMatches.Length != 1 || !Equals(String(state, "kind"), kind))
             {
                 ownership = ComponentOwnershipStatus.Conflict;
-                detail = stateMatches?.Length != 1 ? "InstalledState 组件重复" : "组件 kind 与声明不一致";
+                detail = stateMatches.Length != 1 ? "InstalledState 组件重复" : "组件 kind 与声明不一致";
             }
             else
             {
@@ -568,7 +583,8 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
         {
             var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
             var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-            return fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase) ||
+                   fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {

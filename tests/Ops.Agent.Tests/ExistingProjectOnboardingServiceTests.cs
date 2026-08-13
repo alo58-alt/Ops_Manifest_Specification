@@ -223,6 +223,92 @@ public sealed class ExistingProjectOnboardingServiceTests
     }
 
     [Fact]
+    public async Task PlanAndApply_CanAddComponentWithoutChangingExistingBinding()
+    {
+        using var directory = new TestDirectory();
+        var projectRoot = Path.Combine(directory.FullPath, "project");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "ops"));
+        await WriteProjectManifestAsync(projectRoot);
+        await WriteOpsReadmeAsync(projectRoot);
+        var fixture = await CreateFixtureAsync(directory.FullPath);
+        fixture.Cache.Update(
+            new InventorySnapshot(
+                "TEST-HOST",
+                DateTimeOffset.UtcNow,
+                [new InventorySection(
+                    "windows-services",
+                    InventorySourceStatus.Available,
+                    [new InventoryItem("OnboardingFixture", "API", "Running", new Dictionary<string, string?>
+                    {
+                        ["binaryPath"] = Path.Combine(projectRoot, "service.exe")
+                    })])]),
+            new ManifestCatalogSnapshot(DateTimeOffset.UtcNow, []));
+        var initialRequest = new ExistingProjectOnboardingRequest(
+            projectRoot,
+            "production",
+            ExistingProjectOnboardingAction.Plan);
+        var initialPlan = await fixture.Service.ExecuteAsync(initialRequest, TestContext.Current.CancellationToken);
+        var initialApply = await fixture.Service.ExecuteAsync(
+            initialRequest with
+            {
+                Action = ExistingProjectOnboardingAction.Apply,
+                ExpectedPlanToken = initialPlan.PlanToken
+            },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(OperationOutcome.Succeeded, initialApply.Outcome);
+
+        await WriteProjectManifestWithWorkerAsync(projectRoot);
+        fixture.Cache.Update(
+            new InventorySnapshot(
+                "TEST-HOST",
+                DateTimeOffset.UtcNow,
+                [new InventorySection(
+                    "windows-services",
+                    InventorySourceStatus.Available,
+                    [
+                        new InventoryItem("OnboardingFixture", "API", "Running", new Dictionary<string, string?>
+                        {
+                            ["binaryPath"] = Path.Combine(projectRoot, "service.exe")
+                        }),
+                        new InventoryItem("OnboardingFixture.Worker", "Worker", "Running", new Dictionary<string, string?>
+                        {
+                            ["binaryPath"] = Path.Combine(projectRoot, "worker.exe")
+                        })
+                    ])]),
+            fixture.Cache.Read().Catalog ?? throw new InvalidOperationException("测试接入后缺少目录快照"));
+        var refreshRequest = initialRequest with
+        {
+            NativeNames = new Dictionary<string, string>
+            {
+                ["api"] = "OnboardingFixture",
+                ["worker"] = "OnboardingFixture.Worker"
+            }
+        };
+        var refreshPlan = await fixture.Service.ExecuteAsync(
+            refreshRequest,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(OperationOutcome.Succeeded, refreshPlan.Outcome);
+        Assert.True(refreshPlan.CanApply);
+        var refreshApply = await fixture.Service.ExecuteAsync(
+            refreshRequest with
+            {
+                Action = ExistingProjectOnboardingAction.Apply,
+                ExpectedPlanToken = refreshPlan.PlanToken
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(OperationOutcome.Succeeded, refreshApply.Outcome);
+        Assert.True(refreshApply.AlreadyOnboarded);
+        var bindingPath = Assert.Single(Directory.EnumerateFiles(fixture.ManifestRoot, "*.binding.json"));
+        using var binding = JsonDocument.Parse(await File.ReadAllTextAsync(
+            bindingPath,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(2, binding.RootElement.GetProperty("metadata").GetProperty("revision").GetInt32());
+        Assert.Equal(2, binding.RootElement.GetProperty("componentBindings").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Plan_SameServiceNameOutsideProjectRoot_FailsClosed()
     {
         using var directory = new TestDirectory();
@@ -388,6 +474,47 @@ public sealed class ExistingProjectOnboardingServiceTests
                 "rollbackOnFailure": true,
                 "healthTimeoutSeconds": 60
               }
+            }
+            """,
+            TestContext.Current.CancellationToken);
+
+    private static Task WriteProjectManifestWithWorkerAsync(string projectRoot) =>
+        File.WriteAllTextAsync(
+            Path.Combine(projectRoot, "ops", "project-manifest.json"),
+            """
+            {
+              "$schema": "https://raw.githubusercontent.com/alo58-alt/Ops_Manifest_Specification/main/spec/v1/schemas/project-manifest.schema.json",
+              "apiVersion": "ops.company/v1",
+              "manifestKind": "ProjectManifest",
+              "metadata": {
+                "id": "onboarding-fixture",
+                "displayName": "Onboarding Fixture",
+                "owners": ["platform-team"]
+              },
+              "components": [
+                {
+                  "id": "api",
+                  "displayName": "Onboarding Fixture",
+                  "kind": "windowsService",
+                  "entrypoint": "api-main",
+                  "dependsOn": [],
+                  "health": [{ "kind": "fileHeartbeat", "path": "health/api.json", "maxAgeSeconds": 60 }],
+                  "service": { "startMode": "automatic" }
+                },
+                {
+                  "id": "worker",
+                  "displayName": "Onboarding Worker",
+                  "kind": "windowsService",
+                  "entrypoint": "worker-main",
+                  "dependsOn": ["api"],
+                  "health": [{ "kind": "fileHeartbeat", "path": "health/worker.json", "maxAgeSeconds": 60 }],
+                  "service": { "startMode": "automatic" }
+                }
+              ],
+              "ports": [],
+              "configuration": [],
+              "dataDirectories": [],
+              "update": { "strategy": "stopStart", "rollbackOnFailure": true, "healthTimeoutSeconds": 60 }
             }
             """,
             TestContext.Current.CancellationToken);
