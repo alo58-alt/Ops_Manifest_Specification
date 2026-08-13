@@ -68,7 +68,7 @@ public sealed class InteractiveProcessManager
     public IReadOnlyList<InteractiveAppProcessSnapshot> Snapshot(IReadOnlyList<InteractiveClaim> claims) =>
         claims.Select(claim =>
         {
-            var registration = LiveRegistration(Key(claim));
+            var registration = LiveRegistration(claim, Key(claim));
             return new InteractiveAppProcessSnapshot(
                 claim.ProjectId,
                 claim.Environment,
@@ -83,7 +83,7 @@ public sealed class InteractiveProcessManager
 
     private (bool Success, string? ErrorCode, string Detail) Start(InteractiveClaim claim, string key)
     {
-        var current = LiveRegistration(key);
+        var current = LiveRegistration(claim, key);
         if (current is not null)
         {
             return (true, null, $"已在当前用户 Session {Process.GetCurrentProcess().SessionId} 运行，PID {current.Process.Id}");
@@ -132,7 +132,7 @@ public sealed class InteractiveProcessManager
         string key,
         CancellationToken cancellationToken)
     {
-        var registration = LiveRegistration(key);
+        var registration = LiveRegistration(claim, key);
         if (registration is null) return (true, null, "交互程序已停止");
         var process = registration.Process;
         try
@@ -166,43 +166,107 @@ public sealed class InteractiveProcessManager
         }
     }
 
-    private ProcessRegistration? LiveRegistration(string key)
+    private ProcessRegistration? LiveRegistration(InteractiveClaim claim, string key)
     {
         if (!_processes.TryGetValue(key, out var registration))
         {
-            if (!_persisted.TryGetValue(key, out var item)) return null;
-            try
+            if (_persisted.TryGetValue(key, out var item))
             {
-                var process = Process.GetProcessById(item.ProcessId);
-                if (process.HasExited || process.StartTime.ToUniversalTime() != item.StartedAt.UtcDateTime)
+                try
+                {
+                    var process = Process.GetProcessById(item.ProcessId);
+                    if (process.HasExited || process.StartTime.ToUniversalTime() != item.StartedAt.UtcDateTime)
+                    {
+                        _persisted.Remove(key);
+                        SaveRegistrations();
+                        process.Dispose();
+                    }
+                    else
+                    {
+                        registration = new ProcessRegistration(process, item.StartedAt);
+                        _processes[key] = registration;
+                    }
+                }
+                catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
                     _persisted.Remove(key);
                     SaveRegistrations();
-                    process.Dispose();
-                    return null;
                 }
-                registration = new ProcessRegistration(process, item.StartedAt);
-                _processes[key] = registration;
             }
-            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        }
+
+        if (registration is not null)
+        {
+            try
+            {
+                if (!registration.Process.HasExited) return registration;
+            }
+            catch (InvalidOperationException) { }
+            if (_processes.TryRemove(key, out var removed))
             {
                 _persisted.Remove(key);
+                removed.Process.Dispose();
                 SaveRegistrations();
-                return null;
             }
         }
+
+        return TryAdoptUniqueProcess(claim, key);
+    }
+
+    private ProcessRegistration? TryAdoptUniqueProcess(InteractiveClaim claim, string key)
+    {
+        var currentSessionId = Process.GetCurrentProcess().SessionId;
+        var candidates = new List<(Process Process, InteractiveProcessCandidate Candidate)>();
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                var executable = process.MainModule?.FileName;
+                if (executable is null) { process.Dispose(); continue; }
+                candidates.Add((process, new InteractiveProcessCandidate(process.Id, executable, process.SessionId)));
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+                process.Dispose();
+            }
+        }
+
+        var selectedId = SelectUniqueCandidate(
+            candidates.Select(static item => item.Candidate),
+            claim.Executable,
+            currentSessionId);
+        var selected = selectedId is null
+            ? null
+            : candidates.Single(item => item.Candidate.ProcessId == selectedId.Value).Process;
+        foreach (var candidate in candidates.Where(item => item.Process.Id != selectedId))
+            candidate.Process.Dispose();
+        if (selected is null) return null;
+
         try
         {
-            if (!registration.Process.HasExited) return registration;
-        }
-        catch (InvalidOperationException) { }
-        if (_processes.TryRemove(key, out var removed))
-        {
-            _persisted.Remove(key);
-            removed.Process.Dispose();
+            var startedAt = new DateTimeOffset(selected.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            var adopted = new ProcessRegistration(selected, startedAt);
+            _processes[key] = adopted;
+            _persisted[key] = new PersistedRegistration(key, selected.Id, startedAt);
             SaveRegistrations();
+            return adopted;
         }
-        return null;
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            selected.Dispose();
+            return null;
+        }
+    }
+
+    internal static int? SelectUniqueCandidate(
+        IEnumerable<InteractiveProcessCandidate> candidates,
+        string expectedExecutable,
+        int expectedSessionId)
+    {
+        var matches = candidates.Where(candidate =>
+            candidate.SessionId == expectedSessionId &&
+            string.Equals(candidate.Executable, expectedExecutable, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length == 1 ? matches[0].ProcessId : null;
     }
 
     private static bool ClaimMatches(InteractiveClaim claim, InteractiveAppControlRequest request) =>
@@ -248,3 +312,5 @@ public sealed class InteractiveProcessManager
     private sealed record ProcessRegistration(Process Process, DateTimeOffset StartedAt);
     private sealed record PersistedRegistration(string Key, int ProcessId, DateTimeOffset StartedAt);
 }
+
+internal sealed record InteractiveProcessCandidate(int ProcessId, string Executable, int SessionId);

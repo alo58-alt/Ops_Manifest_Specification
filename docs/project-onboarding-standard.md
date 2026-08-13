@@ -113,7 +113,7 @@ Update。哈希、大小、generation、归属、组件启停、健康检查与�
 
 `interactiveApp` 不是新建一个 Windows Service。CompanyOps 安装器只为当前操作员注册一个“仅用户登录时运行”的 Session Agent，所有 GUI 项目通过这一个会话代理启停。用户未登录时必须显式不可用，不得退回 Session 0，不得启用“允许服务与桌面交互”。
 
-GUI 项目声明只允许项目目录内的 `.exe`，不允许 `.ps1` / `.cmd` / `.bat` 或 Shell 字符串。Session Agent 会二次核验 project/environment/component、EXE、工作目录与参数，并只停止自己精确启动的进程。
+GUI 项目声明只允许项目目录内的 `.exe`，不允许 `.ps1` / `.cmd` / `.bat` 或 Shell 字符串。Session Agent 会二次核验 project/environment/component、EXE、工作目录与参数，并只停止自己精确启动或在启动器退出后按“同一绝对 EXE 路径 + 同一登录 Session + 唯一候选”接续登记的进程。候选不唯一时失败关闭，不按进程名猜测。
 
 GUI 组件必须包含 `interactiveProcess` 健康探针；如果程序还能提供 HTTP、TCP 或心跳文件，可以同时声明，CompanyOps 会全部校验。
 

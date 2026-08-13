@@ -65,6 +65,10 @@ try {
                 -c $Configuration `
                 --no-restore
             if ($LASTEXITCODE -ne 0) { return }
+            dotnet test '.\tests\Ops.SessionAgent.Tests\Ops.SessionAgent.Tests.csproj' `
+                -c $Configuration `
+                --no-restore
+            if ($LASTEXITCODE -ne 0) { return }
             dotnet restore '.\tests\Ops.Setup.Tests\Ops.Setup.Tests.csproj' `
                 --configfile $nugetConfig `
                 -r win-x64 `
