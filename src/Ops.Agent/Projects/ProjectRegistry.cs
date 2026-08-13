@@ -295,6 +295,7 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             problems)
         {
             InstallRoot = String(binding, "roots", "install"),
+            HasInstalledState = installed is not null,
             GitUpdateEnabled = string.Equals(
                 String(manifest, "update", "source", "kind"),
                 "gitFastForward",

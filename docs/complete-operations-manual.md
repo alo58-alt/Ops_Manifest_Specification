@@ -1022,6 +1022,8 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 4. 核对页面显示的 generation、项目状态、Agent 模式以及固定的 operationId/idempotencyKey；
 5. 点击“执行 Plan”，逐条阅读返回步骤并检查最近审计。
 
+已接入但尚无 InstalledState 的现有项目显示为 `Declared`；其 generation 可能是 EnvironmentBinding 修订号，不代表已经发布。此时 Plan 按首次 Install 语义预检，成功后选择 `Install` 建立第一份不可变 release 和 InstalledState。只有 `hasInstalledState=true` 的项目才使用 Update/Rollback。
+
 请求获得明确结果后页面会生成下一条新幂等键；网络错误或超时时保留原键。遇到不确定结果必须先查 `audit`，只允许使用同一键重试，不能生成新键猜测执行。
 
 ### 11.2 CLI 结构化请求（工程诊断）

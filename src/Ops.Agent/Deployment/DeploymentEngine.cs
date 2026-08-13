@@ -495,18 +495,18 @@ public sealed class DeploymentEngine(
         }
 
 
-        if (request.Action == DeploymentAction.Install && project.Generation is not null)
+        if (request.Action == DeploymentAction.Install && project.HasInstalledState)
         {
             return DeploymentContext.Fail("deployment_action_conflict", "项目已有 InstalledState，必须使用 Update");
         }
 
-        if (request.Action == DeploymentAction.Update && project.Generation is null)
+        if (request.Action == DeploymentAction.Update && !project.HasInstalledState)
         {
             return DeploymentContext.Fail("deployment_action_conflict", "项目尚未安装，必须使用 Install");
         }
 
         if ((request.Action == DeploymentAction.Update ||
-             request.Action == DeploymentAction.Plan && project.Generation is not null) &&
+             request.Action == DeploymentAction.Plan && project.HasInstalledState) &&
             (project.Status != ProjectBindingStatus.Installed ||
              project.Components.Any(static component => component.Ownership != ComponentOwnershipStatus.Owned)))
         {

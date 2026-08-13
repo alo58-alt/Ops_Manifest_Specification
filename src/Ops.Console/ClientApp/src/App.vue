@@ -8,7 +8,7 @@ type ComponentView = {
 }
 type ProjectView = {
   projectId: string; displayName: string; environment: string; status: string;
-  installedVersion?: string; generation?: number; installRoot?: string; gitUpdateEnabled: boolean;
+  installedVersion?: string; generation?: number; installRoot?: string; gitUpdateEnabled: boolean; hasInstalledState: boolean;
   components: ComponentView[]; problems: string[]
 }
 type SecurityContext = { user: string; role: 'reader' | 'operator' | 'admin'; csrfToken: string }
@@ -95,9 +95,10 @@ const canSubmitDeployment = computed(() => {
   const project = selectedProject.value
   if (!canOperate.value || !project || project.status === 'Conflict' || !!activeOperation.value) return false
   if (deploymentNeedsRelease.value && (!releaseManifestPath.value.trim() || !artifactDirectory.value.trim())) return false
-  if (deploymentAction.value === 'Install' && project.generation != null) return false
+  if (deploymentAction.value === 'Install' && project.hasInstalledState) return false
+  if ((deploymentAction.value === 'Update' || deploymentAction.value === 'Rollback') && !project.hasInstalledState) return false
   if ((deploymentAction.value === 'Update' || deploymentAction.value === 'Rollback' ||
-       deploymentAction.value === 'Plan' && project.generation != null) &&
+       deploymentAction.value === 'Plan' && project.hasInstalledState) &&
       (project.generation == null || project.status !== 'Installed' || project.components.some(component => component.ownership !== 'Owned'))) return false
   return deploymentAction.value === 'Plan' || agentMode.value === 'mutations-enabled'
 })
@@ -261,9 +262,6 @@ async function planOnboarding() {
         onboardingNativeNames.value[component.componentId] = component.nativeName
       }
     }
-    for (const port of envelope.data.ports) {
-      if (port.port && !onboardingPorts.value[port.portId]) onboardingPorts.value[port.portId] = port.port
-    }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
@@ -297,6 +295,8 @@ function chooseProjectDirectory() {
   const result = directoryBrowserResult.value
   if (!result?.currentPath || !result.isProjectRoot) return
   onboardingProjectRoot.value = result.currentPath
+  onboardingNativeNames.value = {}
+  onboardingPorts.value = {}
   resetOnboardingPlan()
   directoryBrowserOpen.value = false
 }
@@ -577,8 +577,8 @@ onMounted(refresh)
           </label>
         </div>
         <div v-for="port in onboardingResult.ports" :key="port.portId" class="onboarding-port">
-          <span>{{ port.portId }} · {{ port.protocol }} · {{ port.address }}</span>
-          <label>实际端口<input v-model.number="onboardingPorts[port.portId]" type="number" min="1" max="65535" @input="invalidateOnboardingPlan"></label>
+          <span>{{ port.portId }} · {{ port.protocol }} · {{ port.address }} · 当前/声明端口 <strong>{{ port.port || '未声明' }}</strong></span>
+          <label>指定新端口（可选）<input v-model.number="onboardingPorts[port.portId]" type="number" min="1" max="65535" :placeholder="port.port ? `留空沿用 ${port.port}` : '请输入端口'" @input="invalidateOnboardingPlan"></label>
         </div>
         <ul v-if="onboardingResult.problems.length" class="onboarding-problems"><li v-for="problem in onboardingResult.problems" :key="problem">{{ problem }}</li></ul>
         <ul v-if="onboardingResult.health.length" class="onboarding-health"><li v-for="item in onboardingResult.health" :key="item.componentId" :class="item.success ? 'good' : 'bad'">{{ item.componentId }}：{{ item.detail }}</li></ul>
@@ -606,9 +606,9 @@ onMounted(refresh)
         <label>动作
           <select v-model="deploymentAction" @change="resetDeploymentAttempt">
             <option value="Plan">Plan（只读预检）</option>
-            <option value="Install" :disabled="selectedProject?.generation != null">Install</option>
-            <option value="Update" :disabled="selectedProject?.generation == null">Update</option>
-            <option value="Rollback" :disabled="selectedProject?.generation == null">Rollback</option>
+            <option value="Install" :disabled="selectedProject?.hasInstalledState">Install</option>
+            <option value="Update" :disabled="!selectedProject?.hasInstalledState">Update</option>
+            <option value="Rollback" :disabled="!selectedProject?.hasInstalledState">Rollback</option>
           </select>
         </label>
         <label v-if="deploymentNeedsRelease" class="wide">ReleaseManifest 主机绝对路径

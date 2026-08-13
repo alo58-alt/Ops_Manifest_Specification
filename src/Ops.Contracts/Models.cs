@@ -90,6 +90,8 @@ public sealed record ProjectRuntimeView(
     public string? InstallRoot { get; init; }
 
     public bool GitUpdateEnabled { get; init; }
+
+    public bool HasInstalledState { get; init; }
 }
 
 public sealed record ProjectComponentRuntimeView(

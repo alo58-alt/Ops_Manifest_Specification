@@ -193,6 +193,13 @@ public sealed class ExistingProjectOnboardingServiceTests
             TestContext.Current.CancellationToken);
         Assert.Equal(OperationOutcome.Succeeded, initialApply.Outcome);
 
+        var preservedPlan = await fixture.Service.ExecuteAsync(
+            initialRequest with { Ports = null },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(OperationOutcome.Succeeded, preservedPlan.Outcome);
+        Assert.Equal(8080, Assert.Single(preservedPlan.Ports).Port);
+        Assert.True(preservedPlan.CanApply);
+
         var correctedRequest = initialRequest with
         {
             Ports = new Dictionary<string, int> { ["web-http"] = 18342 }

@@ -35,6 +35,7 @@ public sealed class ProjectRegistryTests
 
         var project = Assert.Single(snapshot.Projects);
         Assert.Equal(ProjectBindingStatus.Installed, project.Status);
+        Assert.True(project.HasInstalledState);
         Assert.Equal(ComponentOwnershipStatus.Owned, Assert.Single(project.Components).Ownership);
     }
 
@@ -161,6 +162,7 @@ public sealed class ProjectRegistryTests
 
         var ownedProject = Assert.Single(owned.Projects);
         Assert.Equal(ProjectBindingStatus.Declared, ownedProject.Status);
+        Assert.False(ownedProject.HasInstalledState);
         Assert.Equal(7, ownedProject.Generation);
         Assert.Equal("running", Assert.Single(ownedProject.Components).RuntimeState);
         Assert.Equal(ComponentOwnershipStatus.Owned, Assert.Single(ownedProject.Components).Ownership);

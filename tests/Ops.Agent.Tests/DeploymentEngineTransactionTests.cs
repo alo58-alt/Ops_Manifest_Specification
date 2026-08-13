@@ -178,7 +178,7 @@ public sealed class DeploymentEngineTransactionTests
             "test",
             ProjectBindingStatus.Declared,
             null,
-            null,
+            3,
             [
                 new ProjectComponentRuntimeView(
                     "api",
@@ -218,7 +218,7 @@ public sealed class DeploymentEngineTransactionTests
                 "sample",
                 "test",
                 DeploymentAction.Install,
-                0,
+                3,
                 releasePath,
                 root),
             activator,

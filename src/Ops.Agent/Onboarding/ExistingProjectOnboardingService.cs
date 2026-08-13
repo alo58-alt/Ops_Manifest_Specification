@@ -267,6 +267,10 @@ public sealed class ExistingProjectOnboardingService(
         string? existingProjectManifestJson = null;
         if (manifest is not null && projectId is not null && projectRoot is not null && dataRoot is not null && logsRoot is not null)
         {
+            var existingPorts = await ReadExistingPortBindingsAsync(
+                projectId,
+                environment,
+                cancellationToken);
             var componentBindings = new JsonArray();
             foreach (var component in manifest["components"]!.AsArray().OfType<JsonObject>())
             {
@@ -326,7 +330,12 @@ public sealed class ExistingProjectOnboardingService(
                 var protocol = port["protocol"]!.GetValue<string>();
                 var exposure = port["exposure"]!.GetValue<string>();
                 var requestedPort = request.Ports?.GetValueOrDefault(portId);
-                var resolvedPort = requestedPort ?? port["preferredPort"]?.GetValue<int>();
+                var existingPort = existingPorts.TryGetValue(portId, out var boundPort)
+                    ? boundPort
+                    : (int?)null;
+                var resolvedPort = requestedPort ??
+                                   existingPort ??
+                                   port["preferredPort"]?.GetValue<int>();
                 var requiresInput = resolvedPort is null or < 1 or > 65535;
                 var address = exposure == "lan" ? "0.0.0.0" : "127.0.0.1";
                 ports.Add(new OnboardingPortProposal(
@@ -662,6 +671,47 @@ public sealed class ExistingProjectOnboardingService(
         }
 
         return new ExistingManifestDocuments(existingProjectManifestJson, existingBindingJson);
+    }
+
+    private async Task<IReadOnlyDictionary<string, int>> ReadExistingPortBindingsAsync(
+        string projectId,
+        string environment,
+        CancellationToken cancellationToken)
+    {
+        var catalog = await manifestCatalog.InspectAsync(cancellationToken);
+        var matchingBindings = new List<JsonObject>();
+        foreach (var entry in catalog.Entries.Where(entry =>
+                     entry.IsValid &&
+                     entry.ManifestKind == "EnvironmentBinding" &&
+                     entry.ProjectId == projectId))
+        {
+            var root = JsonNode.Parse(await File.ReadAllTextAsync(entry.Path, cancellationToken)) as JsonObject;
+            if (root is not null &&
+                GetString(root, "metadata", "environment") == environment &&
+                string.Equals(
+                    GetString(root, "metadata", "hostId"),
+                    _paths.HostId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                matchingBindings.Add(root);
+            }
+        }
+
+        if (matchingBindings.Count != 1)
+        {
+            return new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        return matchingBindings[0]["portBindings"]?.AsArray()
+                   .OfType<JsonObject>()
+                   .Where(item => item["portId"] is not null && item["port"] is not null)
+                   .GroupBy(item => item["portId"]!.GetValue<string>(), StringComparer.Ordinal)
+                   .Where(group => group.Count() == 1)
+                   .ToDictionary(
+                       group => group.Key,
+                       group => group.Single()["port"]!.GetValue<int>(),
+                       StringComparer.Ordinal) ??
+               new Dictionary<string, int>(StringComparer.Ordinal);
     }
 
     private static bool BindingEvolutionIsSafe(JsonObject existing, JsonObject proposed)
