@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using CompanyOps.Contracts;
 
 namespace CompanyOps.SessionAgent;
@@ -216,6 +217,7 @@ public sealed class InteractiveProcessManager
     private ProcessRegistration? TryAdoptUniqueProcess(InteractiveClaim claim, string key)
     {
         var currentSessionId = Process.GetCurrentProcess().SessionId;
+        var parentProcessIds = SnapshotParentProcessIds();
         var candidates = new List<(Process Process, InteractiveProcessCandidate Candidate)>();
         foreach (var process in Process.GetProcesses())
         {
@@ -223,7 +225,11 @@ public sealed class InteractiveProcessManager
             {
                 var executable = process.MainModule?.FileName;
                 if (executable is null) { process.Dispose(); continue; }
-                candidates.Add((process, new InteractiveProcessCandidate(process.Id, executable, process.SessionId)));
+                candidates.Add((process, new InteractiveProcessCandidate(
+                    process.Id,
+                    parentProcessIds.GetValueOrDefault(process.Id),
+                    executable,
+                    process.SessionId)));
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
             {
@@ -266,7 +272,47 @@ public sealed class InteractiveProcessManager
         var matches = candidates.Where(candidate =>
             candidate.SessionId == expectedSessionId &&
             string.Equals(candidate.Executable, expectedExecutable, StringComparison.OrdinalIgnoreCase)).ToArray();
-        return matches.Length == 1 ? matches[0].ProcessId : null;
+        if (matches.Length == 0) return null;
+
+        var byId = matches.ToDictionary(static candidate => candidate.ProcessId);
+        var roots = matches.Where(candidate => !byId.ContainsKey(candidate.ParentProcessId)).ToArray();
+        if (roots.Length != 1) return null;
+        var rootId = roots[0].ProcessId;
+        foreach (var candidate in matches)
+        {
+            var current = candidate;
+            var visited = new HashSet<int>();
+            while (current.ProcessId != rootId)
+            {
+                if (!visited.Add(current.ProcessId) ||
+                    !byId.TryGetValue(current.ParentProcessId, out var parent))
+                    return null;
+                current = parent;
+            }
+        }
+        return rootId;
+    }
+
+    private static IReadOnlyDictionary<int, int> SnapshotParentProcessIds()
+    {
+        var result = new Dictionary<int, int>();
+        var snapshot = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
+        if (snapshot == InvalidHandleValue) return result;
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)Marshal.SizeOf<ProcessEntry32>() };
+            if (!Process32First(snapshot, ref entry)) return result;
+            do
+            {
+                result[(int)entry.ProcessId] = (int)entry.ParentProcessId;
+                entry.Size = (uint)Marshal.SizeOf<ProcessEntry32>();
+            } while (Process32Next(snapshot, ref entry));
+            return result;
+        }
+        finally
+        {
+            _ = CloseHandle(snapshot);
+        }
     }
 
     private static bool ClaimMatches(InteractiveClaim claim, InteractiveAppControlRequest request) =>
@@ -311,6 +357,44 @@ public sealed class InteractiveProcessManager
 
     private sealed record ProcessRegistration(Process Process, DateTimeOffset StartedAt);
     private sealed record PersistedRegistration(string Key, int ProcessId, DateTimeOffset StartedAt);
+
+    private const uint Th32csSnapProcess = 0x00000002;
+    private static readonly nint InvalidHandleValue = new(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public nuint DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string ExecutableFile;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint CreateToolhelp32Snapshot(uint flags, uint processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32First(nint snapshot, ref ProcessEntry32 entry);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32Next(nint snapshot, ref ProcessEntry32 entry);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
 }
 
-internal sealed record InteractiveProcessCandidate(int ProcessId, string Executable, int SessionId);
+internal sealed record InteractiveProcessCandidate(
+    int ProcessId,
+    int ParentProcessId,
+    string Executable,
+    int SessionId);

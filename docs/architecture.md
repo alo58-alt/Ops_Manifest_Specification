@@ -79,7 +79,7 @@ flowchart LR
 
 `windowsService` 与 `interactiveApp` 共用同一组件事务：按反向依赖精确停止，切换 ReleaseManifest 声明的入口，再按依赖顺序启动并运行全部探针。原生 SCM 服务切换 `ImagePath`；NSSM 服务保持 SCM 指向 `nssm.exe`，只切换受控的 `Application/AppDirectory/AppParameters`；交互程序由 Agent 原子写入当前入口状态，Agent 与 Session Agent 使用同一状态。任一步受控失败均恢复每个组件的旧入口和原运行状态。
 
-部分单文件 GUI（例如 PyInstaller onefile）会由 `Process.Start` 返回的引导进程把运行权交给同路径子进程。Session Agent 只在原登记 PID 已退出后，按“当前激活 release 的 EXE 绝对路径 + 当前登录 Session”重新缩减候选；恰好一个候选时才接续登记，多于一个或没有候选均保持失败关闭。它不会按进程名、全局映像名或其他目录中的同名 EXE 猜测归属。
+部分单文件 GUI（例如 PyInstaller onefile）会由 `Process.Start` 返回的引导进程建立一个或多个同路径子进程。Session Agent 只在原登记 PID 已退出或登记丢失后，按“当前激活 release 的 EXE 绝对路径 + 当前登录 Session + 唯一父子进程树”重新缩减候选；全部候选只有一个树根且均可沿父进程链回溯到该根时，才接续登记并把整棵树作为一个逻辑组件控制。出现两个独立树根、断裂关系或没有候选均保持失败关闭。它不会按进程名、全局映像名或其他目录中的同名 EXE 猜测归属。
 
 ## 6. 遗留 PM2 边界
 
