@@ -21,7 +21,7 @@
 | 扫描 ProjectManifest、EnvironmentBinding、InstalledState | 已实现 | 可以 |
 | 盘点 Windows Service、IIS、任务计划、监听端口 | 已实现 | 可以 |
 | 只读查看项目、归属、健康和审计 | 已实现 | 可以 |
-| Console 图形化 Plan / Install / Update / Rollback 请求 | 已实现并通过前端生产构建 | 完成 operator 浏览器与试点主机 UAT 后可以 |
+| Console 图形化检查更新 / 安全更新 / 回滚请求 | 已实现并通过前端生产构建 | Console 自动选择 Install 或 Update；完成 operator 浏览器与试点主机 UAT 后可以 |
 | 校验 ReleaseManifest、ZIP 大小和 SHA-256 | 已实现 | 可以 |
 | 安全解包到不可变 release、登记端口和版本指针 | 已实现 MVP | 只允许工程试点 |
 | 精确启停已存在且已证明归属的原生组件 | 已实现 | 现场授权后可以 |
@@ -1016,13 +1016,13 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 
 ### 11.1 Console 图形页面（普通运维优先）
 
-1. 在本机 Console 的“受控发布”中选择项目环境；
-2. 选择 `Plan（只读预检）`；
-3. 输入 ReleaseManifest 的主机绝对路径和制品所在主机目录；
-4. 核对页面显示的 generation、项目状态、Agent 模式以及固定的 operationId/idempotencyKey；
-5. 点击“执行 Plan”，逐条阅读返回步骤并检查最近审计。
+1. 在“项目与组件”找到目标项目，点击“更新项目”；
+2. 在“项目更新”只填写发布包目录。该目录必须同时包含 `release-manifest.json` 和清单引用的发布 ZIP；
+3. 点击“检查更新”执行只读预检，或点击“安全更新”进入受控更新；
+4. Console 自动根据 InstalledState 选择首次 Install 或普通 Update，Agent 在切换前仍会重新校验 generation、归属、ReleaseManifest、ZIP 大小和 SHA-256；
+5. 查看返回步骤和最近审计。用户不需要手工计算、填写或比较哈希。
 
-已接入但尚无 InstalledState 的现有项目显示为 `Declared`；其 generation 可能是 EnvironmentBinding 修订号，不代表已经发布。此时 Plan 按首次 Install 语义预检，成功后选择 `Install` 建立第一份不可变 release 和 InstalledState。只有 `hasInstalledState=true` 的项目才使用 Update/Rollback。
+已接入但尚无 InstalledState 的现有项目显示为 `Declared`；其 generation 可能是 EnvironmentBinding 修订号，不代表已经发布。此时“检查更新”按首次 Install 语义预检，“安全更新”建立第一份不可变 release 和 InstalledState。已有 InstalledState 时同一个按钮自动使用 Update，无需用户选择动作。
 
 请求获得明确结果后页面会生成下一条新幂等键；网络错误或超时时保留原键。遇到不确定结果必须先查 `audit`，只允许使用同一键重试，不能生成新键猜测执行。
 

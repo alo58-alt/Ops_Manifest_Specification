@@ -64,8 +64,6 @@ const loading = ref(true)
 const error = ref('')
 const activeOperation = ref('')
 const selectedProjectKey = ref('')
-const deploymentAction = ref<DeploymentAction>('Plan')
-const releaseManifestPath = ref('')
 const artifactDirectory = ref('')
 const deploymentIdentity = ref(createDeploymentIdentity())
 const deploymentResult = ref<DeploymentResult | null>(null)
@@ -90,18 +88,23 @@ const expandedAudits = ref<Record<string, boolean>>({})
 const canOperate = computed(() => security.value?.role === 'operator' || security.value?.role === 'admin')
 const serviceControlEnabled = computed(() => agentMode.value === 'service-control-enabled' || agentMode.value === 'mutations-enabled')
 const selectedProject = computed(() => projects.value.find(project => projectKey(project) === selectedProjectKey.value) ?? null)
-const deploymentNeedsRelease = computed(() => deploymentAction.value !== 'Rollback')
-const canSubmitDeployment = computed(() => {
+const automaticDeploymentAction = computed<DeploymentAction>(() =>
+  selectedProject.value?.hasInstalledState ? 'Update' : 'Install')
+const releaseManifestPath = computed(() => {
+  const directory = artifactDirectory.value.trim().replace(/[\\/]+$/, '')
+  return directory ? `${directory}\\release-manifest.json` : ''
+})
+
+function canSubmitDeployment(action: DeploymentAction) {
   const project = selectedProject.value
   if (!canOperate.value || !project || project.status === 'Conflict' || !!activeOperation.value) return false
-  if (deploymentNeedsRelease.value && (!releaseManifestPath.value.trim() || !artifactDirectory.value.trim())) return false
-  if (deploymentAction.value === 'Install' && project.hasInstalledState) return false
-  if ((deploymentAction.value === 'Update' || deploymentAction.value === 'Rollback') && !project.hasInstalledState) return false
-  if ((deploymentAction.value === 'Update' || deploymentAction.value === 'Rollback' ||
-       deploymentAction.value === 'Plan' && project.hasInstalledState) &&
+  if (action !== 'Rollback' && !artifactDirectory.value.trim()) return false
+  if (action === 'Install' && project.hasInstalledState) return false
+  if ((action === 'Update' || action === 'Rollback') && !project.hasInstalledState) return false
+  if ((action === 'Update' || action === 'Rollback' || action === 'Plan' && project.hasInstalledState) &&
       (project.generation == null || project.status !== 'Installed' || project.components.some(component => component.ownership !== 'Owned'))) return false
-  return deploymentAction.value === 'Plan' || agentMode.value === 'mutations-enabled'
-})
+  return action === 'Plan' || agentMode.value === 'mutations-enabled'
+}
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: 'same-origin', ...init })
@@ -170,13 +173,15 @@ function resetDeploymentAttempt() {
   error.value = ''
 }
 
-async function deploy() {
+async function deploy(action: DeploymentAction) {
   const project = selectedProject.value
-  if (!canSubmitDeployment.value || !project || !security.value) return
-  if (deploymentAction.value !== 'Plan' &&
-      !confirm(`确认对 ${project.displayName} 执行 ${deploymentAction.value}？\n操作会切换已存在的原生资源入口，并在失败时恢复。`)) return
+  if (!canSubmitDeployment(action) || !project || !security.value) return
+  if (action !== 'Plan' &&
+      !confirm(action === 'Rollback'
+        ? `确认把 ${project.displayName} 回滚到上一版本？\n系统会重新校验归属、重启组件并做健康检查。`
+        : `确认安全更新 ${project.displayName}？\n系统会自动校验发布包、停止精确组件、切换版本并做健康检查；失败时自动恢复。`)) return
 
-  activeOperation.value = `deploy/${projectKey(project)}`
+  activeOperation.value = `deploy/${projectKey(project)}/${action}`
   error.value = ''
   deploymentResult.value = null
   try {
@@ -185,11 +190,11 @@ async function deploy() {
       idempotencyKey: deploymentIdentity.value,
       projectId: project.projectId,
       environment: project.environment,
-      action: deploymentAction.value,
+      action,
       expectedGeneration: project.generation ?? 0,
     }
-    if (deploymentNeedsRelease.value) {
-      request.releaseManifestPath = releaseManifestPath.value.trim()
+    if (action !== 'Rollback') {
+      request.releaseManifestPath = releaseManifestPath.value
       request.artifactDirectory = artifactDirectory.value.trim()
     }
 
@@ -211,6 +216,12 @@ async function deploy() {
   } finally {
     activeOperation.value = ''
   }
+}
+
+function prepareControlledRelease(project: ProjectView) {
+  selectedProjectKey.value = projectKey(project)
+  resetDeploymentAttempt()
+  requestAnimationFrame(() => document.getElementById('controlled-release')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 }
 
 function onboardingRequest(action: 'Plan' | 'Apply') {
@@ -590,12 +601,12 @@ onMounted(refresh)
       </div>
     </section>
 
-    <section class="deployment-panel">
+    <section id="controlled-release" class="deployment-panel">
       <div class="section-title">
-        <div><p class="eyebrow">CONTROLLED RELEASE</p><h2>受控发布</h2></div>
-        <span>本机路径 · 精确 generation · 固定幂等键</span>
+        <div><p class="eyebrow">SAFE UPDATE</p><h2>项目更新</h2></div>
+        <span>自动校验 · 自动启停 · 失败自动恢复</span>
       </div>
-      <form class="deployment-form" @submit.prevent="deploy">
+      <form class="deployment-form" @submit.prevent="deploy('Plan')">
         <label>项目环境
           <select v-model="selectedProjectKey" @change="resetDeploymentAttempt">
             <option v-for="project in projects" :key="projectKey(project)" :value="projectKey(project)">
@@ -603,30 +614,29 @@ onMounted(refresh)
             </option>
           </select>
         </label>
-        <label>动作
-          <select v-model="deploymentAction" @change="resetDeploymentAttempt">
-            <option value="Plan">Plan（只读预检）</option>
-            <option value="Install" :disabled="selectedProject?.hasInstalledState">Install</option>
-            <option value="Update" :disabled="!selectedProject?.hasInstalledState">Update</option>
-            <option value="Rollback" :disabled="!selectedProject?.hasInstalledState">Rollback</option>
-          </select>
+        <label>本次操作
+          <input :value="selectedProject?.hasInstalledState ? '更新现有版本' : '首次纳入版本管理'" readonly>
         </label>
-        <label v-if="deploymentNeedsRelease" class="wide">ReleaseManifest 主机绝对路径
-          <input v-model="releaseManifestPath" autocomplete="off" placeholder="C:\ApprovedReleases\sample\1.2.3\release-manifest.json">
-        </label>
-        <label v-if="deploymentNeedsRelease" class="wide">制品所在主机目录
-          <input v-model="artifactDirectory" autocomplete="off" placeholder="C:\ApprovedReleases\sample\1.2.3">
+        <label class="wide">发布包目录
+          <input v-model="artifactDirectory" autocomplete="off" placeholder="例如 D:\CompanyOps-Releases\webquizbot\webquizbot-3.0.1-20260813.1" @input="resetDeploymentAttempt">
+          <small>目录内应包含 release-manifest.json 和发布 ZIP；完整性由系统自动校验，不需要手工计算哈希。</small>
         </label>
         <div class="deployment-guard wide">
-          <div><small>operationId / idempotencyKey</small><code>{{ deploymentIdentity }}</code></div>
           <div><small>当前状态</small><strong :class="tone(selectedProject?.status || 'unknown')">{{ selectedProject?.status || '未选择' }}</strong></div>
           <div><small>Agent</small><strong :class="tone(agentMode)">{{ agentMode }}</strong></div>
-          <button type="submit" :disabled="!canSubmitDeployment">
-            {{ activeOperation.startsWith('deploy/') ? '执行中…' : `执行 ${deploymentAction}` }}
+          <button type="submit" :disabled="!canSubmitDeployment('Plan')">
+            {{ activeOperation.endsWith('/Plan') ? '检查中…' : '检查更新' }}
+          </button>
+          <button type="button" :disabled="!canSubmitDeployment(automaticDeploymentAction)" @click="deploy(automaticDeploymentAction)">
+            {{ activeOperation.endsWith(`/${automaticDeploymentAction}`) ? '更新中…' : '安全更新' }}
+          </button>
+          <button type="button" class="secondary" :disabled="!canSubmitDeployment('Rollback')" @click="deploy('Rollback')">
+            {{ activeOperation.endsWith('/Rollback') ? '回滚中…' : '回滚上一版本' }}
           </button>
         </div>
       </form>
-      <p class="deployment-hint">Plan 会只读校验声明、制品、归属和现有 Windows Service；超时或网络错误时先查 audit，并保留页面中的同一幂等键。</p>
+      <p v-if="agentMode !== 'mutations-enabled'" class="deployment-hint">当前只允许“检查更新”。执行安全更新需要主机管理员在 CompanyOps 安装配置中启用受控版本变更；这是一项主机级一次性授权。</p>
+      <p v-else class="deployment-hint">“检查更新”不会修改服务；“安全更新”会自动判断首次安装或普通更新，并在真正切换前再次完成全部校验。</p>
       <div v-if="deploymentResult" class="deployment-result" :class="tone(deploymentResult.outcome)">
         <strong>{{ deploymentResult.action }} · {{ deploymentResult.outcome }} · {{ deploymentResult.operationId }}</strong>
         <span>{{ deploymentResult.fromVersion || '未安装' }} → {{ deploymentResult.toVersion || '—' }}</span>
@@ -678,6 +688,15 @@ onMounted(refresh)
               <button :disabled="!canOperate || !gitUpdatesEnabled || !gitUpdateResults[projectKey(project)]?.canApply || !!activeOperation" @click="gitUpdate(project, 'Apply')">
                 {{ activeOperation === `git/${projectKey(project)}/Apply` ? '更新中…' : '安全更新' }}
               </button>
+            </div>
+          </div>
+          <div v-else class="git-update">
+            <div>
+              <strong>L3 · 受控版本更新</strong>
+              <small>使用发布包更新全部声明组件；系统自动校验完整性、精确启停并在失败时恢复旧版本。</small>
+            </div>
+            <div class="controls">
+              <button :disabled="!canOperate || project.status === 'Conflict' || !!activeOperation" @click="prepareControlledRelease(project)">更新项目</button>
             </div>
           </div>
           <div class="component" v-for="component in project.components" :key="component.componentId">

@@ -71,6 +71,11 @@ L3 有两条互斥路径：
 
 `ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环；IIS、静态站点、计划任务和遗留 PM2 在没有对应现场验收前，不获得 L3 更新权限。
 
+日常操作从 Console“项目与组件”中的“更新项目”进入。操作人员只选择同时包含
+`release-manifest.json` 与发布 ZIP 的目录；Console 自动区分首次 Install 和后续
+Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent
+执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
+
 ## 3. 谁负责生成什么
 
 | 材料 | 生成者 | 是否提交项目仓库 | 内容 |
