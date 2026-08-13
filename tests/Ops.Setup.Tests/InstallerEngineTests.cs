@@ -62,4 +62,28 @@ public sealed class InstallerEngineTests
         var components = Assert.IsType<string[]>(field?.GetValue(null));
         Assert.Contains("SessionAgent", components, StringComparer.Ordinal);
     }
+
+    [Fact]
+    public void ValidateAllowedProjectInstallRoots_RequiresNonRootDirectoryWhenEnabled()
+    {
+        var driveRoot = Path.GetPathRoot(Environment.SystemDirectory)!;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            InstallerEngine.ValidateAllowedProjectInstallRoots(true, driveRoot));
+
+        Assert.Contains("不能把磁盘根目录", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ValidateAllowedProjectInstallRoots_NormalizesDistinctDirectories()
+    {
+        var projectRoot = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory)!, "project");
+
+        var roots = InstallerEngine.ValidateAllowedProjectInstallRoots(
+            true,
+            $"{projectRoot}; {projectRoot}\\");
+
+        Assert.Single(roots);
+        Assert.Equal(Path.TrimEndingDirectorySeparator(projectRoot), roots[0], ignoreCase: true);
+    }
 }

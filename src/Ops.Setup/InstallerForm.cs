@@ -7,6 +7,12 @@ internal sealed class InstallerForm : Form
 {
     private readonly TextBox _installRoot = new() { Dock = DockStyle.Fill };
     private readonly TextBox _dataRoot = new() { Dock = DockStyle.Fill };
+    private readonly CheckBox _enableControlledUpdates = new()
+    {
+        AutoSize = true,
+        Text = "启用受控项目更新（推荐）"
+    };
+    private readonly TextBox _approvedProjectRoots = new() { Dock = DockStyle.Fill };
     private readonly Button _installButton = new()
     {
         AutoSize = true,
@@ -30,8 +36,8 @@ internal sealed class InstallerForm : Form
     {
         Text = "CompanyOps 安装程序";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(720, 430);
-        ClientSize = new Size(760, 455);
+        MinimumSize = new Size(720, 545);
+        ClientSize = new Size(760, 575);
         Font = new Font("Microsoft YaHei UI", 10F);
         BackColor = Color.White;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -64,8 +70,11 @@ internal sealed class InstallerForm : Form
             ColumnCount = 1,
             Dock = DockStyle.Fill,
             Padding = new Padding(28, 20, 28, 24),
-            RowCount = 8
+            RowCount = 11
         };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -86,11 +95,23 @@ internal sealed class InstallerForm : Form
             Margin = new Padding(0, 8, 0, 0),
             Text = "可以选择同一个父文件夹，安装程序会创建两个独立子目录。"
         }, 0, 4);
-        layout.Controls.Add(_status, 0, 5);
-        layout.Controls.Add(_progress, 0, 6);
-        layout.Controls.Add(CreateActionRow(), 0, 7);
+        layout.Controls.Add(_enableControlledUpdates, 0, 5);
+        layout.Controls.Add(CreateApprovedRootsRow(), 0, 6);
+        layout.Controls.Add(new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.FromArgb(110, 110, 110),
+            Margin = new Padding(0, 3, 0, 0),
+            Text = "选择项目目录的父目录，例如 WebQuizBot 位于 D:\\project\\webquizbot，则选择 D:\\project。这里只配置一次。"
+        }, 0, 7);
+        layout.Controls.Add(_status, 0, 8);
+        layout.Controls.Add(_progress, 0, 9);
+        layout.Controls.Add(CreateActionRow(), 0, 10);
 
         _progress.Visible = false;
+        _enableControlledUpdates.CheckedChanged += (_, _) =>
+            _approvedProjectRoots.Enabled = _enableControlledUpdates.Checked;
+        _approvedProjectRoots.Enabled = false;
         _installButton.Click += InstallAsync;
 
         var root = new TableLayoutPanel
@@ -112,8 +133,10 @@ internal sealed class InstallerForm : Form
             {
                 _installRoot.Text = existing.InstallRoot;
                 _dataRoot.Text = existing.DataRoot;
+                _enableControlledUpdates.Checked = existing.EnableMutations;
+                _approvedProjectRoots.Text = string.Join("; ", existing.AllowedProjectInstallRoots);
                 _installButton.Text = "升级并启动";
-                _status.Text = "已检测到现有 CompanyOps。点击一次即可保留配置并安全升级。";
+                _status.Text = "已检测到现有 CompanyOps。可在本页完成一次性的受控更新授权，然后安全升级。";
             }
         }
         catch (Exception exception)
@@ -148,6 +171,45 @@ internal sealed class InstallerForm : Form
         row.Controls.Add(textBox, 0, 0);
         row.Controls.Add(browse, 1, 0);
         return row;
+    }
+
+    private Control CreateApprovedRootsRow()
+    {
+        var browse = new Button
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(10, 0, 0, 0),
+            Padding = new Padding(12, 5, 12, 5),
+            Text = "选择项目父目录…"
+        };
+        browse.Click += (_, _) => BrowseForApprovedRoot();
+        var row = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Top, AutoSize = true };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.Controls.Add(_approvedProjectRoots, 0, 0);
+        row.Controls.Add(browse, 1, 0);
+        return row;
+    }
+
+    private void BrowseForApprovedRoot()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "选择允许 CompanyOps 管理的项目父目录",
+            ShowNewFolderButton = false,
+            UseDescriptionForTitle = true
+        };
+        var current = _approvedProjectRoots.Text.Split(';', StringSplitOptions.TrimEntries)[0];
+        if (Directory.Exists(current))
+        {
+            dialog.SelectedPath = current;
+        }
+        if (dialog.ShowDialog() == DialogResult.OK)
+        {
+            _approvedProjectRoots.Text = dialog.SelectedPath;
+            _enableControlledUpdates.Checked = true;
+        }
     }
 
     private Control CreateActionRow()
@@ -211,7 +273,12 @@ internal sealed class InstallerForm : Form
         {
             var progress = new Progress<string>(message => _status.Text = message);
             var result = await Task.Run(() =>
-                new InstallerEngine().InstallOrUpdate(_installRoot.Text, _dataRoot.Text, progress));
+                new InstallerEngine().InstallOrUpdate(
+                    _installRoot.Text,
+                    _dataRoot.Text,
+                    _enableControlledUpdates.Checked,
+                    _approvedProjectRoots.Text,
+                    progress));
 
             _progress.Visible = false;
             _installing = false;

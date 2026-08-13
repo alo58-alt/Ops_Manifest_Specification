@@ -221,7 +221,10 @@ async function deploy(action: DeploymentAction) {
 function prepareControlledRelease(project: ProjectView) {
   selectedProjectKey.value = projectKey(project)
   resetDeploymentAttempt()
-  requestAnimationFrame(() => document.getElementById('controlled-release')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  requestAnimationFrame(() => {
+    document.getElementById('controlled-release')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    document.getElementById('release-directory')?.focus({ preventScroll: true })
+  })
 }
 
 function onboardingRequest(action: 'Plan' | 'Apply') {
@@ -618,7 +621,7 @@ onMounted(refresh)
           <input :value="selectedProject?.hasInstalledState ? '更新现有版本' : '首次纳入版本管理'" readonly>
         </label>
         <label class="wide">发布包目录
-          <input v-model="artifactDirectory" autocomplete="off" placeholder="例如 D:\CompanyOps-Releases\webquizbot\webquizbot-3.0.1-20260813.1" @input="resetDeploymentAttempt">
+          <input id="release-directory" v-model="artifactDirectory" autocomplete="off" placeholder="例如 D:\CompanyOps-Releases\webquizbot\webquizbot-3.0.1-20260813.1" @input="resetDeploymentAttempt">
           <small>目录内应包含 release-manifest.json 和发布 ZIP；完整性由系统自动校验，不需要手工计算哈希。</small>
         </label>
         <div class="deployment-guard wide">
@@ -696,7 +699,7 @@ onMounted(refresh)
               <small>使用发布包更新全部声明组件；系统自动校验完整性、精确启停并在失败时恢复旧版本。</small>
             </div>
             <div class="controls">
-              <button :disabled="!canOperate || project.status === 'Conflict' || !!activeOperation" @click="prepareControlledRelease(project)">更新项目</button>
+              <button :disabled="!canOperate || project.status === 'Conflict' || !!activeOperation" @click="prepareControlledRelease(project)">打开更新面板 ↑</button>
             </div>
           </div>
           <div class="component" v-for="component in project.components" :key="component.componentId">

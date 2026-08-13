@@ -2,6 +2,8 @@
 
 > 普通首次安装不要从第 4 章逐条复制工程命令。请直接打开仓库根目录的 `三步安装CompanyOps.md`：构建电脑双击生成安装包、复制一个 EXE、服务器双击安装。后续章节只用于工程排障和高级接入。
 
+安装器同时承担受控更新的一次性主机授权：勾选“启用受控项目更新”并选择项目父目录后，安装器写入 `EnableMutations` 与 `AllowedProjectInstallRoots`，再随安装或升级重启 CompanyOps。普通操作人员不需要手工修改 JSON 或单独执行服务命令。
+
 > 适用仓库：`Ops_Manifest_Specification`
 > 适用平台：Windows 10/11、Windows Server，x64
 > 适用阶段：CompanyOps MVP 首次安装、只读盘点、项目声明接入和受控试点

@@ -11,7 +11,11 @@ namespace CompanyOps.Setup;
 
 internal sealed record InstallResult(string InstallRoot, string DataRoot, string ConsoleUrl, bool WasUpgrade);
 
-internal sealed record ExistingInstallation(string InstallRoot, string DataRoot);
+internal sealed record ExistingInstallation(
+    string InstallRoot,
+    string DataRoot,
+    bool EnableMutations,
+    string[] AllowedProjectInstallRoots);
 
 internal sealed record PayloadManifest(int Version, IReadOnlyList<PayloadManifestFile> Files);
 
@@ -61,8 +65,8 @@ internal sealed class InstallerEngine
             throw new InvalidOperationException("无法读取现有 CompanyOps Agent 配置。 ");
         }
         using var settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
-        var manifestDirectory = settings.RootElement
-            .GetProperty("Ops")
+        var ops = settings.RootElement.GetProperty("Ops");
+        var manifestDirectory = ops
             .GetProperty("ManifestDirectory")
             .GetString();
         var dataRoot = manifestDirectory is null
@@ -73,9 +77,21 @@ internal sealed class InstallerEngine
             throw new InvalidOperationException("无法从现有 Agent 配置识别 CompanyOps 数据目录。 ");
         }
 
+        var enableMutations = ops.TryGetProperty("EnableMutations", out var enableMutationsElement) &&
+                              enableMutationsElement.ValueKind == JsonValueKind.True;
+        var allowedProjectInstallRoots = ops.TryGetProperty("AllowedProjectInstallRoots", out var rootsElement) &&
+                                         rootsElement.ValueKind == JsonValueKind.Array
+            ? rootsElement.EnumerateArray()
+                .Where(static item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                .Select(static item => item.GetString()!)
+                .ToArray()
+            : [];
+
         return new ExistingInstallation(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)));
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)),
+            enableMutations,
+            allowedProjectInstallRoots);
     }
 
     internal static void VerifyPackagePayload(string? packageRoot = null)
@@ -87,10 +103,18 @@ internal sealed class InstallerEngine
         ValidatePayload(payloadRoot);
     }
 
-    public InstallResult InstallOrUpdate(string installInput, string dataInput, IProgress<string> progress)
+    public InstallResult InstallOrUpdate(
+        string installInput,
+        string dataInput,
+        bool enableControlledUpdates,
+        string allowedProjectRootsInput,
+        IProgress<string> progress)
     {
         var installRoot = ValidateLocalDirectory(installInput, "程序目录");
         var dataRoot = ValidateLocalDirectory(dataInput, "数据目录");
+        var allowedProjectInstallRoots = ValidateAllowedProjectInstallRoots(
+            enableControlledUpdates,
+            allowedProjectRootsInput);
         ValidateIndependentRoots(installRoot, dataRoot);
         EnsureAdministrator();
         var existing = DetectExistingInstallation();
@@ -102,13 +126,23 @@ internal sealed class InstallerEngine
                 throw new InvalidOperationException(
                     $"输入目录与现有安装不一致。\n程序目录应为：{existing.InstallRoot}\n数据目录应为：{existing.DataRoot}");
             }
-            return Upgrade(existing, progress);
+            return Upgrade(existing, enableControlledUpdates, allowedProjectInstallRoots, progress);
         }
 
-        return InstallFirstTime(installRoot, dataRoot, progress);
+        return InstallFirstTime(
+            installRoot,
+            dataRoot,
+            enableControlledUpdates,
+            allowedProjectInstallRoots,
+            progress);
     }
 
-    private InstallResult InstallFirstTime(string installRoot, string dataRoot, IProgress<string> progress)
+    private InstallResult InstallFirstTime(
+        string installRoot,
+        string dataRoot,
+        bool enableControlledUpdates,
+        string[] allowedProjectInstallRoots,
+        IProgress<string> progress)
     {
         EnsureFirstInstallTargets(installRoot, dataRoot);
         EnsureServiceMissing(AgentServiceName);
@@ -153,7 +187,14 @@ internal sealed class InstallerEngine
             Directory.CreateDirectory(interactiveSnapshotDirectory);
             ApplyDirectoryAcl(dataRoot, "*S-1-5-18:(OI)(CI)F");
             progress.Report("正在写入主机配置…");
-            WriteSettings(installRoot, manifestDirectory, agentStateDirectory, snapshotDirectory, interactiveSnapshotDirectory);
+            WriteSettings(
+                installRoot,
+                manifestDirectory,
+                agentStateDirectory,
+                snapshotDirectory,
+                interactiveSnapshotDirectory,
+                enableControlledUpdates,
+                allowedProjectInstallRoots);
 
             progress.Report("正在注册 Windows 服务…");
             var agentExe = Path.Combine(installRoot, "Agent", "CompanyOps.Agent.exe");
@@ -230,7 +271,11 @@ internal sealed class InstallerEngine
         }
     }
 
-    private InstallResult Upgrade(ExistingInstallation existing, IProgress<string> progress)
+    private InstallResult Upgrade(
+        ExistingInstallation existing,
+        bool enableControlledUpdates,
+        string[] allowedProjectInstallRoots,
+        IProgress<string> progress)
     {
         progress.Report("正在校验升级包…");
         var stagingRoot = Path.Combine(
@@ -265,6 +310,10 @@ internal sealed class InstallerEngine
                 }
                 File.Copy(currentConfig, preparedConfig, overwrite: true);
             }
+            UpdateDeploymentAuthorization(
+                Path.Combine(preparedRoot, "Agent", "appsettings.json"),
+                enableControlledUpdates,
+                allowedProjectInstallRoots);
 
             ApplyDirectoryAcl(preparedRoot, "*S-1-5-18:(OI)(CI)F");
             ApplyDirectoryAcl(preparedRoot, "*S-1-5-20:(OI)(CI)RX");
@@ -541,6 +590,25 @@ internal sealed class InstallerEngine
         return Path.TrimEndingDirectorySeparator(fullPath);
     }
 
+    internal static string[] ValidateAllowedProjectInstallRoots(bool enabled, string input)
+    {
+        if (!enabled)
+        {
+            return [];
+        }
+
+        var candidates = input.Split([';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (candidates.Length == 0)
+        {
+            throw new InvalidOperationException("启用受控项目更新时，必须选择至少一个项目父目录。");
+        }
+
+        return candidates
+            .Select(candidate => ValidateLocalDirectory(candidate, "受控项目父目录"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     private static void ValidateIndependentRoots(string installRoot, string dataRoot)
     {
         var installPrefix = installRoot + Path.DirectorySeparatorChar;
@@ -717,7 +785,9 @@ internal sealed class InstallerEngine
         string manifestDirectory,
         string agentStateDirectory,
         string snapshotDirectory,
-        string interactiveSnapshotDirectory)
+        string interactiveSnapshotDirectory,
+        bool enableControlledUpdates,
+        string[] allowedProjectInstallRoots)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var ownerSid = identity.User?.Value ?? throw new InvalidOperationException("无法识别当前安装用户 SID。");
@@ -733,12 +803,12 @@ internal sealed class InstallerEngine
                 InteractiveSnapshotDirectory = interactiveSnapshotDirectory,
                 PipeName = "CompanyOps.Agent.v1",
                 InventoryIntervalSeconds = 30,
-                EnableMutations = false,
+                EnableMutations = enableControlledUpdates,
                 EnableExistingServiceOperations = true,
                 EnableInteractiveSessionOperations = true,
                 EnableExistingGitUpdates = true,
                 GitExecutablePath = string.Empty,
-                AllowedProjectInstallRoots = Array.Empty<string>(),
+                AllowedProjectInstallRoots = allowedProjectInstallRoots,
                 AllowedClientSids = new[] { "S-1-5-20" }
             },
             Logging = new { LogLevel = new Dictionary<string, string> { ["Default"] = "Information", ["Microsoft.Hosting.Lifetime"] = "Information" } }
@@ -778,6 +848,21 @@ internal sealed class InstallerEngine
             JsonSerializer.Serialize(sessionSettings, JsonOptions));
         ApplyDirectoryAcl(manifestDirectory, $"*{ownerSid}:(OI)(CI)RX");
         ApplyDirectoryAcl(interactiveSnapshotDirectory, $"*{ownerSid}:(OI)(CI)M");
+    }
+
+    private static void UpdateDeploymentAuthorization(
+        string settingsPath,
+        bool enableControlledUpdates,
+        string[] allowedProjectInstallRoots)
+    {
+        var settings = JsonNode.Parse(File.ReadAllText(settingsPath))?.AsObject()
+            ?? throw new InvalidOperationException("Agent 配置不是有效 JSON。");
+        var ops = settings["Ops"]?.AsObject()
+            ?? throw new InvalidOperationException("Agent 配置缺少 Ops 节点。");
+        ops["EnableMutations"] = enableControlledUpdates;
+        ops["AllowedProjectInstallRoots"] = new JsonArray(
+            allowedProjectInstallRoots.Select(static path => JsonValue.Create(path)).ToArray());
+        File.WriteAllText(settingsPath, settings.ToJsonString(JsonOptions));
     }
 
     private static void ConfigureSessionAgentFromAgentSettings(string installRoot)
