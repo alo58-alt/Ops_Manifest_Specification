@@ -147,12 +147,12 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                     steps);
             }
 
-            steps.Add($"组件 {item.ComponentId} 原生资源存在，当前入口和运行状态可读取");
+            steps.Add($"组件 {item.ComponentId} 当前入口状态可读取：{capture.Detail}");
         }
 
         return new DeploymentActivationResult(
             true,
-            $"{plan.Items.Count} 个原生组件已通过只读预检并具备受控激活能力",
+            $"{plan.Items.Count} 个组件已通过只读预检并具备受控激活能力",
             steps);
     }
 
@@ -771,8 +771,6 @@ public sealed class InteractiveAppDeploymentEntrypointAdapter(
         var claim = matches[0];
         if (claim.ExpectedExecutable is null || claim.ExpectedWorkingDirectory is null)
             return new(false, Detail: "交互程序当前入口路径不完整");
-        if (!File.Exists(claim.ExpectedExecutable) || !Directory.Exists(claim.ExpectedWorkingDirectory))
-            return new(false, Detail: "交互程序当前 EXE 或工作目录不存在");
 
         var managed = await entrypoints.ReadAsync(
             target.ProjectId,
@@ -781,6 +779,8 @@ public sealed class InteractiveAppDeploymentEntrypointAdapter(
             cancellationToken);
         if (managed.Exists && managed.State is null)
             return new(false, Detail: managed.Error ?? "交互程序当前激活入口状态无效");
+        if (!Directory.Exists(claim.ExpectedWorkingDirectory))
+            return new(false, Detail: "交互程序当前工作目录不存在");
 
         var read = await snapshots.ReadAsync(claim, cancellationToken);
         var processMatches = read.Snapshot?.Processes.Where(process =>
@@ -791,6 +791,26 @@ public sealed class InteractiveAppDeploymentEntrypointAdapter(
             process.Arguments.SequenceEqual(claim.ExpectedArguments, StringComparer.Ordinal)).ToArray() ?? [];
         if (processMatches.Length > 1)
             return new(false, Detail: "交互程序当前运行进程不唯一");
+        if (!File.Exists(claim.ExpectedExecutable))
+        {
+            if (managed.Exists || processMatches.Length != 0)
+                return new(false, Detail: "交互程序已登记或正在运行，但当前 EXE 不存在");
+            return new(
+                true,
+                new DeploymentEntrypointSnapshot(
+                    target.ComponentId,
+                    target.Kind,
+                    target.NativeName,
+                    WindowsCommandLine.Build(claim.ExpectedExecutable, claim.ExpectedArguments),
+                    false,
+                    target.ProjectId,
+                    target.Environment,
+                    claim.ExpectedExecutable,
+                    claim.ExpectedWorkingDirectory,
+                    claim.ExpectedArguments,
+                    false),
+                "交互程序尚未部署；允许首次 Install 写入受控入口");
+        }
 
         return new(
             true,
