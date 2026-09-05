@@ -5,6 +5,10 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddOptions<BridgeOptions>()
     .Bind(builder.Configuration.GetSection(BridgeOptions.SectionName))
     .Validate(static options => !string.IsNullOrWhiteSpace(options.PipeName), "PipeName 不能为空")
+    .Validate(static options => string.IsNullOrWhiteSpace(options.OwnerSid) ||
+                                System.Text.RegularExpressions.Regex.IsMatch(
+                                    options.OwnerSid,
+                                    @"^S-1-(?:[0-9]+-)+[0-9]+$"), "OwnerSid 格式无效")
     .Validate(static options => Path.IsPathFullyQualified(options.ManifestDirectory), "ManifestDirectory 必须是绝对路径")
     .Validate(static options => Path.IsPathFullyQualified(options.SnapshotDirectory), "SnapshotDirectory 必须是绝对路径")
     .Validate(static options => Path.IsPathFullyQualified(options.NodeExecutablePath) && File.Exists(options.NodeExecutablePath), "NodeExecutablePath 必须存在")

@@ -115,6 +115,8 @@ Update。哈希、大小、generation、归属、组件启停、健康检查与�
 
 GUI 项目声明只允许项目目录内的 `.exe`，不允许 `.ps1` / `.cmd` / `.bat` 或 Shell 字符串。Session Agent 会二次核验 project/environment/component、EXE、工作目录与参数，并只停止自己精确启动或在登记丢失后按“同一绝对 EXE 路径 + 同一登录 Session + 唯一父子进程树”接续登记的进程树。存在两个独立树根或父子关系断裂时失败关闭，不按进程名猜测。
 
+首次走不可变制品 Install 时，ProjectManifest 声明的交互 EXE 可以尚未出现在旧项目目录中；此时组件只能保持 `Declared / Missing`，不能执行 L2 启停。只有 ReleaseManifest 为该组件提供了通过哈希校验的 `.exe` 载荷，L3 Plan 才允许把它作为“首次安装入口”切换。若已存在交互入口登记、运行进程或 InstalledState，而旧 EXE 消失，仍按冲突失败关闭，不能借首次安装规则绕过归属校验。
+
 GUI 组件必须包含 `interactiveProcess` 健康探针；如果程序还能提供 HTTP、TCP 或心跳文件，可以同时声明，CompanyOps 会全部校验。
 
 文件心跳默认相对于 `roots.data`；程序把心跳写入日志根时，声明 `rootRef=logs`。可选根仅限 `install|data|logs`，不得在探针中写服务器绝对路径。
@@ -192,7 +194,7 @@ ProjectManifest 中 `pm2Legacy.cwd` 和 `pm2Legacy.script` 是项目内相对路
 
 一个项目有多种组件时，把所需模板中的组件、端口和数据目录合并进同一份 ProjectManifest；不要建立多份 ProjectManifest。必须替换所有 `change-me` 相关值、组件名称、端口和健康语义，不要只改显示名称。
 
-PM2 接入额外要求名称、规范化 cwd、精确 script 唯一匹配；只按 `pm_id` 控制，禁止 `stop all`、`delete all` 和 `kill`。
+PM2 接入额外要求名称、规范化 cwd、精确 script 唯一匹配；只按 `pm_id` 控制，禁止 `stop all`、`delete all` 和 `kill`。项目开发者只负责在 ProjectManifest 声明这三个相对值，绝不提交 owner SID、Pipe、快照文件名或 `PM2_HOME`。运维只需在每个真实 PM2 owner 下运行一次 CompanyOps 的“配置PM2主机接管”，以后每个 PM2 项目都由接入页自动识别 owner 并生成主机绑定。
 
 ## 7. ops/README.md 必须回答的问题
 
@@ -269,16 +271,16 @@ pwsh -NoProfile -File .\tools\New-ProjectRelease.ps1 `
 
 1. 确认服务器上的项目目录已经包含 `ops\project-manifest.json` 和 `ops\README.md`；
 2. 打开 CompanyOps Console 的“接入现有项目”；
-3. 输入服务器项目目录，例如 `D:\project\webquizbot`，点击“检查项目”；
-4. 检查结果必须唯一匹配原生资源，并证明 Windows Service/IIS 入口位于项目目录内；
-5. 点击“确认只读接入”；CompanyOps 原子导入 ProjectManifest，并为当前主机生成 EnvironmentBinding；
+3. 点击“选择目录…”，在服务器目录选择器中选取项目目录（例如 `D:\project\webquizbot`），再点击“检查项目”；
+4. 检查结果必须唯一匹配原生资源，并证明 Windows Service/IIS 入口位于项目目录内；PM2 项目还必须显示同一个 owner 下每个组件的精确 name、pm_id、cwd、script；
+5. 点击“确认只读接入”；CompanyOps 原子导入 ProjectManifest，并为当前主机生成 EnvironmentBinding；已接入项目无需重复接入，声明变化时从项目卡点击“同步声明”，系统会自动回显原生资源名称和当前绑定端口；
 6. 下方出现正确的 `项目 ID / 环境 / 组件`；L1 显示 `Declared / DeclaredOnly` 是正常结果；
 7. 接入后自动执行声明式健康探针，但不会创建 InstalledState；
 8. Agent 完成受控安装后，才允许显示 `Installed / Owned`；
 9. 名称、真实原生资源、路径、端口或已有声明无法唯一对应时必须失败关闭；
 10. 接入测试不得启动、停止、更新或重建业务服务；写操作另行授权。
 
-仅把 `ops` 目录复制到服务器不会自动注册，必须在 Console 中执行上述一次接入。不得手工伪造 InstalledState。
+仅把 `ops` 目录复制到服务器不会自动注册，必须在 Console 中执行上述一次接入。不得手工伪造 InstalledState。PM2 项目的现有配置与 Secret 不导入 CompanyOps，接入不会读取它们；如果没有新鲜 owner 发现快照、多个 owner 同时命中、同名多实例或 cwd/script 不一致，按钮必须保持禁用。
 
 ## 10. 在具体项目中交给 AI 的标准任务
 

@@ -28,7 +28,8 @@ type DeploymentResult = {
 }
 type OnboardingComponent = {
   componentId: string; displayName: string; kind: string; nativeName?: string;
-  requiresInput: boolean; candidates: string[]
+  requiresInput: boolean; candidates: string[]; pmId?: number; ownerSid?: string;
+  expectedCwd?: string; expectedScript?: string; matchDetail?: string
 }
 type OnboardingPort = {
   portId: string; componentId: string; protocol: string; address: string;
@@ -43,8 +44,10 @@ type OnboardingResult = {
 }
 type DirectoryBrowseEntry = { name: string; fullPath: string }
 type DirectoryBrowseResult = {
-  currentPath?: string; parentPath?: string; isProjectRoot: boolean; directories: DirectoryBrowseEntry[]
+  currentPath?: string; parentPath?: string; isProjectRoot: boolean;
+  isReleaseDirectory: boolean; directories: DirectoryBrowseEntry[]
 }
+type DirectoryBrowserPurpose = 'project' | 'release'
 type GitUpdateResult = {
   operationId: string; action: 'Check' | 'Apply'; outcome: string; projectId: string; environment: string;
   updateAvailable: boolean; canApply: boolean; currentCommit?: string; remoteCommit?: string;
@@ -76,6 +79,7 @@ const directoryBrowserOpen = ref(false)
 const directoryBrowserLoading = ref(false)
 const directoryBrowserResult = ref<DirectoryBrowseResult | null>(null)
 const directoryBrowserError = ref('')
+const directoryBrowserPurpose = ref<DirectoryBrowserPurpose>('project')
 const gitUpdatesEnabled = ref(false)
 const interactiveSessionOperationsEnabled = ref(false)
 const gitUpdateResults = ref<Record<string, GitUpdateResult>>({})
@@ -94,6 +98,37 @@ const releaseManifestPath = computed(() => {
   const directory = artifactDirectory.value.trim().replace(/[\\/]+$/, '')
   return directory ? `${directory}\\release-manifest.json` : ''
 })
+const directoryBrowserTitle = computed(() => directoryBrowserPurpose.value === 'project'
+  ? '选择服务器项目目录'
+  : '选择服务器发布包目录')
+const directoryBrowserCanSelect = computed(() => {
+  const result = directoryBrowserResult.value
+  if (!result?.currentPath) return false
+  return directoryBrowserPurpose.value === 'project'
+    ? result.isProjectRoot
+    : result.isReleaseDirectory
+})
+const directoryBrowserStatus = computed(() => {
+  if (!directoryBrowserResult.value?.currentPath) return '请先选择服务器磁盘'
+  if (directoryBrowserPurpose.value === 'project') {
+    return directoryBrowserResult.value.isProjectRoot
+      ? '已检测到 ops\\project-manifest.json'
+      : '当前目录不是可接入项目'
+  }
+  return directoryBrowserResult.value.isReleaseDirectory
+    ? '已检测到 release-manifest.json'
+    : '当前目录不是有效发布包目录'
+})
+const directoryBrowserSelectLabel = computed(() => directoryBrowserPurpose.value === 'project'
+  ? '选择此项目'
+  : '选择此发布包')
+const onboardingExistingProject = computed(() => projects.value.find(project =>
+  !!project.installRoot &&
+  sameHostPath(project.installRoot, onboardingProjectRoot.value) &&
+  project.environment.toLowerCase() === onboardingEnvironment.value.trim().toLowerCase()) ?? null)
+const onboardingTitle = computed(() => onboardingExistingProject.value
+  ? `同步 ${onboardingExistingProject.value.displayName} 声明`
+  : '接入新项目')
 
 function canSubmitDeployment(action: DeploymentAction) {
   const project = selectedProject.value
@@ -156,6 +191,11 @@ async function refresh() {
 
 function projectKey(project: ProjectView) {
   return `${project.projectId}/${project.environment}`
+}
+
+function sameHostPath(left: string, right: string) {
+  const normalize = (value: string) => value.trim().replace(/[\\/]+$/, '').replaceAll('/', '\\').toLowerCase()
+  return !!left.trim() && !!right.trim() && normalize(left) === normalize(right)
 }
 
 function componentControlEnabled(component: ComponentView) {
@@ -276,6 +316,11 @@ async function planOnboarding() {
         onboardingNativeNames.value[component.componentId] = component.nativeName
       }
     }
+    for (const port of envelope.data.ports) {
+      if (port.port && !onboardingPorts.value[port.portId]) {
+        onboardingPorts.value[port.portId] = port.port
+      }
+    }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
@@ -305,13 +350,24 @@ async function browseDirectories(path?: string) {
   }
 }
 
-function chooseProjectDirectory() {
+async function openDirectoryBrowser(purpose: DirectoryBrowserPurpose, path?: string) {
+  directoryBrowserPurpose.value = purpose
+  directoryBrowserResult.value = null
+  await browseDirectories(path)
+}
+
+function chooseDirectory() {
   const result = directoryBrowserResult.value
-  if (!result?.currentPath || !result.isProjectRoot) return
-  onboardingProjectRoot.value = result.currentPath
-  onboardingNativeNames.value = {}
-  onboardingPorts.value = {}
-  resetOnboardingPlan()
+  if (!result?.currentPath || !directoryBrowserCanSelect.value) return
+  if (directoryBrowserPurpose.value === 'project') {
+    onboardingProjectRoot.value = result.currentPath
+    onboardingNativeNames.value = {}
+    onboardingPorts.value = {}
+    resetOnboardingPlan()
+  } else {
+    artifactDirectory.value = result.currentPath
+    resetDeploymentAttempt()
+  }
   directoryBrowserOpen.value = false
 }
 
@@ -338,6 +394,20 @@ async function applyOnboarding() {
 
 function resetOnboardingPlan() {
   onboardingResult.value = null
+}
+
+async function prepareOnboardingRefresh(project: ProjectView) {
+  if (!project.installRoot) {
+    error.value = `${project.displayName} 没有可用的服务器项目目录，无法同步声明。`
+    return
+  }
+  onboardingProjectRoot.value = project.installRoot
+  onboardingEnvironment.value = project.environment
+  onboardingNativeNames.value = {}
+  onboardingPorts.value = {}
+  resetOnboardingPlan()
+  document.querySelector('.onboarding-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  await planOnboarding()
 }
 
 function invalidateOnboardingPlan() {
@@ -544,28 +614,28 @@ onMounted(refresh)
 
     <section class="onboarding-panel">
       <div class="section-title">
-        <div><p class="eyebrow">EXISTING PROJECT</p><h2>接入现有项目</h2></div>
+        <div><p class="eyebrow">PROJECT DECLARATION</p><h2>{{ onboardingTitle }}</h2></div>
         <span>只读预检 · 唯一资源匹配 · 不控制业务服务</span>
       </div>
       <form class="onboarding-form" @submit.prevent="planOnboarding">
         <label class="onboarding-path">服务器上的项目目录
           <span class="directory-field">
             <input v-model="onboardingProjectRoot" readonly placeholder="点击右侧按钮选择服务器项目目录">
-            <button type="button" class="secondary" @click="browseDirectories(onboardingProjectRoot || undefined)">选择目录…</button>
+            <button type="button" class="secondary" @click="openDirectoryBrowser('project', onboardingProjectRoot || undefined)">选择目录…</button>
           </span>
         </label>
         <label>环境标识
           <input v-model="onboardingEnvironment" autocomplete="off" placeholder="production" @input="resetOnboardingPlan">
         </label>
         <button type="submit" :disabled="activeOperation === 'onboarding/plan'">
-          {{ activeOperation === 'onboarding/plan' ? '检查中…' : '检查项目' }}
+          {{ activeOperation === 'onboarding/plan' ? '检查中…' : onboardingExistingProject ? '检查声明变化' : '检查项目' }}
         </button>
       </form>
-      <p class="onboarding-hint"><code>production</code> 表示服务器上的正式运行实例；同一项目另有测试实例时可用 <code>test</code> 或 <code>staging</code>。请选择包含 <code>ops\project-manifest.json</code> 的服务器项目目录。检查不会复制文件、不会重启服务。</p>
+      <p class="onboarding-hint">首次接入才需要选择目录；已接入项目平时不需要重复操作，只有 <code>ops\project-manifest.json</code> 发生变化时，才从下方项目卡点击“同步声明”。检查不会复制文件、不会重启服务。</p>
 
       <div v-if="directoryBrowserOpen" class="directory-modal" @click.self="directoryBrowserOpen = false">
-        <section class="directory-dialog" role="dialog" aria-modal="true" aria-label="选择服务器项目目录">
-          <header><div><strong>选择服务器项目目录</strong><small>{{ directoryBrowserResult?.currentPath || '选择服务器磁盘' }}</small></div><button type="button" class="secondary" @click="directoryBrowserOpen = false">关闭</button></header>
+        <section class="directory-dialog" role="dialog" aria-modal="true" :aria-label="directoryBrowserTitle">
+          <header><div><strong>{{ directoryBrowserTitle }}</strong><small>{{ directoryBrowserResult?.currentPath || '选择服务器磁盘' }}</small></div><button type="button" class="secondary" @click="directoryBrowserOpen = false">关闭</button></header>
           <p v-if="directoryBrowserError" class="directory-error">{{ directoryBrowserError }}</p>
           <p v-if="directoryBrowserLoading" class="directory-loading">正在读取服务器目录…</p>
           <div v-else class="directory-list">
@@ -573,7 +643,7 @@ onMounted(refresh)
             <button v-for="directory in directoryBrowserResult?.directories || []" :key="directory.fullPath" type="button" class="directory-entry" @click="browseDirectories(directory.fullPath)"><span>📁</span>{{ directory.name }}</button>
             <p v-if="directoryBrowserResult && !directoryBrowserResult.directories.length" class="directory-empty">此目录没有可浏览的子目录。</p>
           </div>
-          <footer><span :class="directoryBrowserResult?.isProjectRoot ? 'good' : 'warn'">{{ directoryBrowserResult?.isProjectRoot ? '已检测到 ops\\project-manifest.json' : '当前目录不是可接入项目' }}</span><button type="button" :disabled="!directoryBrowserResult?.isProjectRoot" @click="chooseProjectDirectory">选择此项目</button></footer>
+          <footer><span :class="directoryBrowserCanSelect ? 'good' : 'warn'">{{ directoryBrowserStatus }}</span><button type="button" :disabled="!directoryBrowserCanSelect" @click="chooseDirectory">{{ directoryBrowserSelectLabel }}</button></footer>
         </section>
       </div>
 
@@ -585,22 +655,29 @@ onMounted(refresh)
         <p v-if="onboardingResult.detail">{{ onboardingResult.detail }}</p>
         <div v-for="component in onboardingResult.components" :key="component.componentId" class="onboarding-binding">
           <div><strong>{{ component.displayName }}</strong><small>{{ component.kind }} · {{ component.componentId }}</small></div>
-          <label>主机原生名称
+          <div v-if="component.kind === 'pm2Legacy'" class="pm2-owner-match" :class="component.requiresInput ? 'bad' : 'good'">
+            <strong>{{ component.requiresInput ? 'PM2 精确匹配未通过' : `PM2 #${component.pmId} · ${component.nativeName}` }}</strong>
+            <small v-if="component.ownerSid">owner：{{ component.ownerSid }}</small>
+            <small v-if="component.expectedCwd">cwd：{{ component.expectedCwd }}</small>
+            <small v-if="component.expectedScript">script：{{ component.expectedScript }}</small>
+            <small v-if="component.matchDetail">{{ component.matchDetail }}</small>
+          </div>
+          <label v-else>主机原生名称
             <input v-model="onboardingNativeNames[component.componentId]" :list="`native-${component.componentId}`" :placeholder="component.nativeName || '请输入精确名称'" @input="invalidateOnboardingPlan">
             <datalist :id="`native-${component.componentId}`"><option v-for="candidate in component.candidates" :key="candidate" :value="candidate" /></datalist>
           </label>
         </div>
         <div v-for="port in onboardingResult.ports" :key="port.portId" class="onboarding-port">
-          <span>{{ port.portId }} · {{ port.protocol }} · {{ port.address }} · 当前/声明端口 <strong>{{ port.port || '未声明' }}</strong></span>
-          <label>指定新端口（可选）<input v-model.number="onboardingPorts[port.portId]" type="number" min="1" max="65535" :placeholder="port.port ? `留空沿用 ${port.port}` : '请输入端口'" @input="invalidateOnboardingPlan"></label>
+          <span>{{ port.portId }} · {{ port.protocol }} · {{ port.address }} · 当前绑定端口 <strong>{{ port.port || '未绑定' }}</strong></span>
+          <label>当前实际端口<input v-model.number="onboardingPorts[port.portId]" type="number" min="1" max="65535" :placeholder="port.port ? String(port.port) : '请输入实际端口'" @input="invalidateOnboardingPlan"></label>
         </div>
         <ul v-if="onboardingResult.problems.length" class="onboarding-problems"><li v-for="problem in onboardingResult.problems" :key="problem">{{ problem }}</li></ul>
         <ul v-if="onboardingResult.health.length" class="onboarding-health"><li v-for="item in onboardingResult.health" :key="item.componentId" :class="item.success ? 'good' : 'bad'">{{ item.componentId }}：{{ item.detail }}</li></ul>
         <ol v-if="onboardingResult.steps.length"><li v-for="step in onboardingResult.steps" :key="step">{{ step }}</li></ol>
         <button v-if="onboardingResult.action === 'Plan'" class="onboarding-apply" :disabled="!onboardingResult.canApply || !!activeOperation" @click="applyOnboarding">
-          {{ activeOperation === 'onboarding/apply' ? '接入中…' : '确认只读接入' }}
+          {{ activeOperation === 'onboarding/apply' ? '处理中…' : onboardingResult.alreadyOnboarded ? '确认同步声明' : '确认只读接入' }}
         </button>
-        <strong v-else-if="onboardingResult.outcome === 'Succeeded'" class="onboarding-done">接入完成，可以在下方查看项目。</strong>
+        <strong v-else-if="onboardingResult.outcome === 'Succeeded'" class="onboarding-done">{{ onboardingResult.alreadyOnboarded ? '声明同步完成，项目原有绑定已保留。' : '接入完成，可以在下方查看项目。' }}</strong>
       </div>
     </section>
 
@@ -621,7 +698,10 @@ onMounted(refresh)
           <input :value="selectedProject?.hasInstalledState ? '更新现有版本' : '首次纳入版本管理'" readonly>
         </label>
         <label class="wide">发布包目录
-          <input id="release-directory" v-model="artifactDirectory" autocomplete="off" placeholder="例如 D:\CompanyOps-Releases\webquizbot\webquizbot-3.0.1-20260813.1" @input="resetDeploymentAttempt">
+          <span class="directory-field">
+            <input id="release-directory" v-model="artifactDirectory" readonly placeholder="点击右侧按钮选择服务器发布包目录">
+            <button type="button" class="secondary" @click="openDirectoryBrowser('release', artifactDirectory || undefined)">选择目录…</button>
+          </span>
           <small>目录内应包含 release-manifest.json 和发布 ZIP；完整性由系统自动校验，不需要手工计算哈希。</small>
         </label>
         <div class="deployment-guard wide">
@@ -655,7 +735,10 @@ onMounted(refresh)
         <article v-for="project in projects" :key="`${project.projectId}/${project.environment}`" class="project-card">
           <div class="project-head">
             <div><h3>{{ project.displayName }}</h3><p>{{ project.projectId }} · {{ project.environment }} · {{ project.installedVersion || '现有服务' }}</p></div>
-            <span class="pill" :class="tone(project.status)">{{ project.status }}</span>
+            <div class="project-head-actions">
+              <span class="pill" :class="tone(project.status)">{{ project.status }}</span>
+              <button type="button" class="secondary" :disabled="!canOperate || !project.installRoot || !!activeOperation" @click="prepareOnboardingRefresh(project)">同步声明</button>
+            </div>
           </div>
           <p v-for="problem in project.problems" :key="problem" class="problem">{{ problem }}</p>
           <div v-if="project.gitUpdateEnabled" class="git-update">

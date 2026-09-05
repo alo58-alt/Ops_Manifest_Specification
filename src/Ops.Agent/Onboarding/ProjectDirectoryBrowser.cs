@@ -15,7 +15,7 @@ public sealed class ProjectDirectoryBrowser
                 .OrderBy(drive => drive.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(drive => new DirectoryBrowseEntry(drive.Name, drive.RootDirectory.FullName))
                 .ToArray();
-            return new DirectoryBrowseResult(null, null, false, drives);
+            return new DirectoryBrowseResult(null, null, false, false, drives);
         }
 
         var currentPath = ResolveLocalDirectory(request.Path);
@@ -61,7 +61,13 @@ public sealed class ProjectDirectoryBrowser
             ? null
             : current.Parent?.FullName;
         var isProjectRoot = File.Exists(Path.Combine(currentPath, "ops", "project-manifest.json"));
-        return new DirectoryBrowseResult(currentPath, parentPath, isProjectRoot, directories);
+        var isReleaseDirectory = File.Exists(Path.Combine(currentPath, "release-manifest.json"));
+        return new DirectoryBrowseResult(
+            currentPath,
+            parentPath,
+            isProjectRoot,
+            isReleaseDirectory,
+            directories);
     }
 
     private static string ResolveLocalDirectory(string input)

@@ -50,6 +50,10 @@ button:hover:not(:disabled) { border-color: #64d3c4; color: #7ee6d7; } button:di
 .onboarding-binding { display: grid; grid-template-columns: minmax(220px, .6fr) minmax(280px, 1fr); align-items: end; gap: 16px; border-top: 1px solid #1d3434; padding: 12px 0; }
 .onboarding-binding > div strong { display: block; color: #eaf0f4; font-size: 13px; }
 .onboarding-binding small { display: block; margin-top: 3px; color: #64777d; font: 11px ui-monospace, monospace; }
+.pm2-owner-match { min-width: 0; border: 1px solid #294846; border-radius: 7px; padding: 9px 11px; background: #0a1719; }
+.pm2-owner-match strong { color: #8ce0c3 !important; }
+.pm2-owner-match.bad strong { color: #ff9a9a !important; }
+.pm2-owner-match small { overflow-wrap: anywhere; }
 .onboarding-port { display: grid; grid-template-columns: 1fr 180px; align-items: end; gap: 16px; border-top: 1px solid #1d3434; padding: 12px 0; color: #9db1b6; font: 12px ui-monospace, monospace; }
 .onboarding-port input { padding: 7px 9px; }
 .onboarding-problems, .onboarding-health, .onboarding-result ol { margin: 10px 0; padding-left: 21px; color: #ff9a9a; font-size: 12px; }
@@ -83,6 +87,8 @@ button:hover:not(:disabled) { border-color: #64d3c4; color: #7ee6d7; } button:di
 .project-card { border: 1px solid #26383d; background: linear-gradient(140deg, #0e1b1f, #0a1418); margin-bottom: 14px; }
 .project-head { display: flex; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid #26383d; }
 .project-head h3 { margin: 0 0 3px; font-size: 18px; } .project-head p { margin: 0; color: #71848a; font: 12px ui-monospace, monospace; }
+.project-head-actions { display: flex; align-items: center; gap: 8px; }
+.project-head-actions button { padding: 5px 9px; font-size: 11px; }
 .pill { border: 1px solid currentColor; border-radius: 999px; padding: 5px 9px; height: fit-content; font: 700 10px ui-monospace, monospace; text-transform: uppercase; }
 .problem { margin: 0; padding: 10px 20px; background: #241719; color: #ff9a9a; font-size: 12px; }
 .component { display: grid; grid-template-columns: minmax(190px, 1fr) 160px auto; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid #1d2c31; }

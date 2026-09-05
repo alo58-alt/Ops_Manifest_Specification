@@ -298,6 +298,7 @@ public sealed record DirectoryBrowseResult(
     string? CurrentPath,
     string? ParentPath,
     bool IsProjectRoot,
+    bool IsReleaseDirectory,
     IReadOnlyList<DirectoryBrowseEntry> Directories);
 
 public sealed record DirectoryBrowseEntry(string Name, string FullPath);
@@ -326,7 +327,12 @@ public sealed record OnboardingComponentProposal(
     string Kind,
     string? NativeName,
     bool RequiresInput,
-    IReadOnlyList<string> Candidates);
+    IReadOnlyList<string> Candidates,
+    int? PmId = null,
+    string? OwnerSid = null,
+    string? ExpectedCwd = null,
+    string? ExpectedScript = null,
+    string? MatchDetail = null);
 
 public sealed record OnboardingPortProposal(
     string PortId,
@@ -344,6 +350,25 @@ public sealed record OnboardingHealthResult(
 public static class Pm2BridgeProtocol
 {
     public const string Version = "ops-pm2-control/v1";
+}
+
+public static class Pm2SnapshotProtocol
+{
+    public const string Version = "ops-pm2-snapshot/v1";
+    public const string DiscoverySearchPattern = "CompanyOps.Pm2Bridge.*.discovery.json";
+
+    public static string DiscoveryFileName(string ownerSid)
+    {
+        if (string.IsNullOrWhiteSpace(ownerSid) ||
+            ownerSid.Length > 184 ||
+            ownerSid.Any(static character =>
+                !char.IsAsciiLetterOrDigit(character) && character != '-'))
+        {
+            throw new ArgumentException("PM2 owner SID 不能生成安全的发现快照文件名", nameof(ownerSid));
+        }
+
+        return $"CompanyOps.Pm2Bridge.{ownerSid}.discovery.json";
+    }
 }
 
 public sealed record Pm2BridgeControlRequest(

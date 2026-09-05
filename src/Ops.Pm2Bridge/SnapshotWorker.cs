@@ -1,6 +1,7 @@
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using CompanyOps.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace CompanyOps.Pm2Bridge;
@@ -36,11 +37,15 @@ public sealed class SnapshotWorker(
     {
         using var identity = WindowsIdentity.GetCurrent();
         var ownerSid = identity.User?.Value ?? throw new InvalidOperationException("无法取得当前 owner SID");
-        var snapshotFiles = await FindSnapshotFilesAsync(ownerSid, cancellationToken);
-        if (snapshotFiles.Count == 0)
+        if (!string.IsNullOrWhiteSpace(options.Value.OwnerSid) &&
+            !string.Equals(options.Value.OwnerSid, ownerSid, StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            throw new InvalidOperationException("Bridge 当前运行身份与配置的 PM2 owner SID 不一致");
         }
+        var snapshotFiles = (await FindSnapshotFilesAsync(ownerSid, cancellationToken))
+            .Append(Pm2SnapshotProtocol.DiscoveryFileName(ownerSid))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
         var result = await runner.ListAsync(cancellationToken);
         if (!result.Success)
@@ -51,10 +56,11 @@ public sealed class SnapshotWorker(
 
         var snapshot = new
         {
-            protocolVersion = "ops-pm2-snapshot/v1",
+            protocolVersion = Pm2SnapshotProtocol.Version,
             ownerSid,
             capturedAt = DateTimeOffset.UtcNow,
             daemonPid = 0,
+            controlPipeName = options.Value.PipeName,
             processes = result.Processes.Select(process => new
             {
                 process.Name,

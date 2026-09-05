@@ -9,4 +9,16 @@
     <ProjectReference Include="..\Ops.Contracts\Ops.Contracts.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\tools\Configure-Pm2OwnerBridge.ps1">
+      <Link>Configure-Pm2OwnerBridge.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="..\..\tools\Configure-Pm2OwnerBridge.cmd">
+      <Link>配置PM2主机接管.cmd</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
 </Project>

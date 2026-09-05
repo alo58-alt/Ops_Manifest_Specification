@@ -22,6 +22,22 @@ public sealed class ProjectDirectoryBrowserTests
         Assert.True(selected.IsProjectRoot);
         Assert.Equal(root.FullPath, selected.ParentPath);
         Assert.Contains(selected.Directories, item => item.Name == "child");
+        Assert.False(selected.IsReleaseDirectory);
+    }
+
+    [Fact]
+    public void Browse_RecognizesReleaseDirectory()
+    {
+        using var root = new TestDirectory();
+        var release = Path.Combine(root.FullPath, "release-a");
+        Directory.CreateDirectory(release);
+        File.WriteAllText(Path.Combine(release, "release-manifest.json"), "{}");
+        var browser = new ProjectDirectoryBrowser();
+
+        var selected = browser.Browse(new DirectoryBrowseRequest(release));
+
+        Assert.True(selected.IsReleaseDirectory);
+        Assert.False(selected.IsProjectRoot);
     }
 
     [Fact]

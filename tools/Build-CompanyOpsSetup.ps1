@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Configuration = 'Release',
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [string]$PackageFileName = 'CompanyOps-Offline-win-x64.zip'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,8 +22,12 @@ $setupIntermediateRoot = Join-Path $setupRoot 'obj\'
 # assembly attributes from both projects to collide.
 $setupTestIntermediateRoot = 'obj.setup-upgrade-tests\'
 $outputRoot = Join-Path $repositoryRoot 'output'
-$packageOutput = Join-Path $outputRoot 'CompanyOps-Offline-win-x64.zip'
-$hashOutput = Join-Path $outputRoot 'CompanyOps-Offline-win-x64.sha256.txt'
+if ([IO.Path]::GetFileName($PackageFileName) -ne $PackageFileName -or
+    -not $PackageFileName.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'PackageFileName 必须是单一 .zip 文件名。'
+}
+$packageOutput = Join-Path $outputRoot $PackageFileName
+$hashOutput = Join-Path $outputRoot ($PackageFileName.Substring(0, $PackageFileName.Length - 4) + '.sha256.txt')
 
 function Invoke-Checked {
     param(

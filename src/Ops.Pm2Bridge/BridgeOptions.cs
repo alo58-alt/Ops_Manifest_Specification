@@ -6,6 +6,8 @@ public sealed class BridgeOptions
 
     public string PipeName { get; set; } = "CompanyOps.Pm2Bridge.v1";
 
+    public string OwnerSid { get; set; } = string.Empty;
+
     public string ManifestDirectory { get; set; } = string.Empty;
 
     public string SnapshotDirectory { get; set; } = string.Empty;

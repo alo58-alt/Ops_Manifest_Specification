@@ -122,6 +122,7 @@ CLI 默认超时为：`deploy` 10 分钟、`operate` 2 分钟、其他命令 10 
 - `Install/Update` 先原子预留端口，再解包到 `.staging/<operationId>`；
 - ZIP 每个目标必须位于 staging 内，禁止覆盖已有 release；
 - 发布先对全部组件做精确预检，再按反向依赖停止、切换声明式入口、按依赖启动并复核声明式健康；原生服务切换 SCM `ImagePath`，NSSM 服务切换其应用入口，interactiveApp 切换 Session Agent 共享的当前入口状态；
+- 首次 Install 的 interactiveApp 可以没有旧 EXE，但必须同时满足“无旧入口登记、无匹配运行进程、工作目录存在”；新 EXE 必须来自已校验的 ReleaseManifest 载荷。失败恢复会删除本次新增入口状态，不伪造旧程序；
 - 原生入口与健康全部通过后，才提交 pointer、InstalledState 和端口；状态提交失败时恢复旧入口、原运行状态和旧状态文件；
 - 失败 release 移入 `.failed/<operationId>`，便于取证，不覆盖旧版本；
 - `Rollback` 只接受 pointer 记录、仍位于本项目 `releases` 根下且内嵌 ReleaseManifest/ProjectManifest 哈希可信的上一版本。

@@ -1012,14 +1012,14 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 
 ## 11. 只做部署计划（普通运维到这里为止）
 
-如果项目卡片仍显示旧组件数量，而本次受审版本新增了组件，先把服务器项目目录快进到包含新 `ops\project-manifest.json` 的提交，再在“接入现有项目”中选择原目录重新检查并确认。该刷新只允许新增组件并保留原根目录、原组件 kind 和原生绑定；不会启停业务服务。任何删除、改绑或类型变化必须走单独迁移，不得用重新接入绕过。
+已接入项目平时不需要再次执行首次接入。如果项目卡片仍显示旧组件数量，而本次受审版本新增了组件，先把服务器项目目录快进到包含新 `ops\project-manifest.json` 的提交，再在该项目卡片点击“同步声明”。Console 自动使用原项目目录、环境、原生资源名称和当前绑定端口做只读预检；确认后只刷新声明。该同步只允许新增组件并保留原根目录、原组件 kind 和原生绑定；不会启停业务服务。任何删除、改绑或类型变化必须走单独迁移，不得用声明同步绕过。
 
 保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。
 
 ### 11.1 Console 图形页面（普通运维优先）
 
 1. 在“项目与组件”找到目标项目，点击“更新项目”；
-2. 在“项目更新”只填写发布包目录。该目录必须同时包含 `release-manifest.json` 和清单引用的发布 ZIP；
+2. 在“项目更新”点击“选择目录…”，从服务器目录选择器选取发布包目录。该目录必须同时包含 `release-manifest.json` 和清单引用的发布 ZIP；首页不接受手工输入服务器路径；
 3. 点击“检查更新”执行只读预检，或点击“安全更新”进入受控更新；
 4. Console 自动根据 InstalledState 选择首次 Install 或普通 Update，Agent 在切换前仍会重新校验 generation、归属、ReleaseManifest、ZIP 大小和 SHA-256；
 5. 查看返回步骤和最近审计。用户不需要手工计算、填写或比较哈希。
@@ -1221,7 +1221,19 @@ Rollback 当前仍不会自动：
 
 新项目不要选择 PM2。本节仅用于已有 PM2 服务。
 
-### 15.1 先确定真实 PM2 owner
+### 15.1 普通运维：把大象装冰箱
+
+主机上同一个 PM2 owner 只配置一次，以后接入多少项目都不再配置 Bridge：
+
+1. 使用真实管理 PM2 的 Windows 账号登录服务器，双击 CompanyOps 程序目录中的 `Pm2Bridge\配置PM2主机接管.cmd`，等待窗口显示“PM2 主机接管配置完成”；
+2. 打开 CompanyOps Console，在“接入新项目”点击“选择目录…”，选择服务器项目目录后点“检查项目”；
+3. 页面显示全部 PM2 组件属于同一个 owner，并逐项回显 name、pm_id、cwd、script 后，点“确认只读接入”。
+
+完成。系统自动生成 EnvironmentBinding 的 `legacyPm2`；不要手填 SID、快照文件名或 Pipe，不要为项目制作专用接入 EXE。此过程不会启停 PM2 服务，也不会读取 PM2 环境变量、项目 Secret 或配置值。
+
+以下内容只用于自动配置失败时的工程排障，普通运维不要逐条执行。
+
+### 15.2 工程排障：确定真实 PM2 owner
 
 必须在当前管理该 PM2 daemon 的 Windows 用户会话中执行：
 
@@ -1247,7 +1259,7 @@ Test-Path -LiteralPath $Pm2Cli
 
 不要在 LocalSystem、管理员的另一个账号或 Agent 服务账号下运行 PM2 命令来猜 owner。不要把完整 `pm2 jlist` 输出复制到日志、工单或文档，因为其中可能包含环境变量。
 
-### 15.2 配置 Bridge
+### 15.3 工程排障：配置 Bridge
 
 在管理员 PowerShell 中输入上一节记录的真实路径，让 PowerShell 生成 Bridge `appsettings.json`：
 
@@ -1268,6 +1280,7 @@ if (-not (Test-Path -LiteralPath $Pm2Cli -PathType Leaf)) {
 $BridgeSettings = [ordered]@{
     Pm2Bridge = [ordered]@{
         PipeName = $BridgePipeName
+        OwnerSid = (whoami /user /fo csv | ConvertFrom-Csv).SID
         ManifestDirectory = Join-Path $DataRoot 'manifests'
         SnapshotDirectory = Join-Path $DataRoot 'Agent\pm2-snapshots'
         NodeExecutablePath = $NodeExecutable
@@ -1280,12 +1293,12 @@ $BridgeSettings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $BridgeConf
 Get-Content -Raw -LiteralPath $BridgeConfigPath
 ```
 
-EnvironmentBinding 的 `legacyPm2` 必须对应：
+Bridge 启动后会自动生成 `CompanyOps.Pm2Bridge.<ownerSid>.discovery.json`。Agent 验证后自动生成 EnvironmentBinding 的 `legacyPm2`，不再要求操作者手工创建以下结构：
 
 ```json
 {
   "ownerSid": "真实 owner SID",
-  "snapshotFileName": "demo-api.pm2.json",
+  "snapshotFileName": "CompanyOps.Pm2Bridge.<ownerSid>.discovery.json",
   "controlPipeName": "CompanyOps.Pm2Bridge.SampleOwner.v1",
   "maxAgeSeconds": 30
 }
@@ -1310,7 +1323,7 @@ Get-Acl -LiteralPath $SnapshotRoot | Format-List
 
 只授权 `$DataRoot\Agent\pm2-snapshots`，不授权整个 `$DataRoot\Agent`。修改前后都要保存 ACL 记录。
 
-### 15.3 试点步骤
+### 15.4 工程试点步骤
 
 1. 保持 Agent mutations=false；
 2. 由管理员保存 Bridge 配置；
@@ -1326,13 +1339,13 @@ Set-Location $BridgeRoot
 4. 在另一个窗口检查缩减快照只包含有限字段，不包含 env：
 
 ```powershell
-$SnapshotFileName = (Read-Host '请输入 EnvironmentBinding 中的 snapshotFileName').Trim()
+$SnapshotFileName = "CompanyOps.Pm2Bridge.$((whoami /user /fo csv | ConvertFrom-Csv).SID).discovery.json"
 $SnapshotPath = Join-Path $DataRoot (Join-Path 'Agent\pm2-snapshots' $SnapshotFileName)
 Get-Content -Raw -LiteralPath $SnapshotPath
 ```
 
-5. 查看 Agent `projects`；
-6. 目标 PM2 组件必须唯一 Matched / Owned；
+5. 在 Console 选择服务器项目目录并执行“检查项目 → 确认只读接入”；
+6. 目标 PM2 组件必须全部由同一个 owner 快照唯一 Matched / Owned；
 7. 前台试运行稳定后，再由管理员注册“该 owner 登录时启动”的任务。注册前先确认任务不存在：
 
 ```powershell

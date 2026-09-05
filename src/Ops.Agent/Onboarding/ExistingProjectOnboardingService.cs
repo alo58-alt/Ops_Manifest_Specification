@@ -24,6 +24,7 @@ public sealed class ExistingProjectOnboardingService(
 {
     private const long MaximumProjectManifestBytes = 4 * 1024 * 1024;
     private readonly ResolvedOpsPaths _paths = pathResolver.Resolve();
+    private readonly Pm2OwnerDiscoveryService _pm2OwnerDiscovery = new(pathResolver, jsonOptions);
 
     public async Task<ExistingProjectOnboardingResult> ExecuteAsync(
         ExistingProjectOnboardingRequest request,
@@ -73,6 +74,7 @@ public sealed class ExistingProjectOnboardingService(
         ManifestWriteResult? bindingWrite = null;
         var projectExistedBefore = File.Exists(plan.ProjectDestination);
         var bindingExistedBefore = File.Exists(plan.BindingDestination);
+        var alreadyOnboarded = projectExistedBefore && bindingExistedBefore;
         try
         {
             Directory.CreateDirectory(_paths.ManifestDirectory);
@@ -139,28 +141,38 @@ public sealed class ExistingProjectOnboardingService(
                     Guid.CreateVersion7().ToString(),
                     DateTimeOffset.UtcNow,
                     "onboarding",
-                    "apply-existing-project",
+                    alreadyOnboarded ? "sync-project-declaration" : "apply-existing-project",
                     "succeeded",
-                    $"{plan.ProjectId}/{plan.Environment} 从 {plan.ProjectRoot} 完成 L1 只读接入；未启停或修改业务服务。"),
+                    alreadyOnboarded
+                        ? $"{plan.ProjectId}/{plan.Environment} 从 {plan.ProjectRoot} 完成声明同步；未启停或修改业务服务。"
+                        : $"{plan.ProjectId}/{plan.Environment} 从 {plan.ProjectRoot} 完成 L1 只读接入；未启停或修改业务服务。"),
                 cancellationToken);
 
             return plan.Result with
             {
                 Action = ExistingProjectOnboardingAction.Apply,
                 Outcome = OperationOutcome.Succeeded,
-                AlreadyOnboarded = projectExistedBefore && bindingExistedBefore,
+                AlreadyOnboarded = alreadyOnboarded,
                 Health = health,
                 Steps =
                 [
-                    "ProjectManifest 已导入 CompanyOps 清单目录",
-                    "EnvironmentBinding 已由当前主机生成并通过契约校验",
+                    alreadyOnboarded
+                        ? "ProjectManifest 已与项目目录同步"
+                        : "ProjectManifest 已导入 CompanyOps 清单目录",
+                    alreadyOnboarded
+                        ? "EnvironmentBinding 已保留当前主机绑定并通过契约校验"
+                        : "EnvironmentBinding 已由当前主机生成并通过契约校验",
                     "项目视图已刷新；未创建 InstalledState",
                     "interactiveApp 如存在，已绑定当前 Console 用户会话，但未启动程序",
                     "未启动、停止、重启或修改任何业务服务"
                 ],
-                Detail = health.All(item => item.Success)
-                    ? "L1 只读接入完成，声明式健康探针全部通过。"
-                    : "L1 只读接入完成，但至少一个健康探针未通过，请查看结果。"
+                Detail = alreadyOnboarded
+                    ? health.All(item => item.Success)
+                        ? "项目声明同步完成，当前绑定和声明式健康探针全部通过。"
+                        : "项目声明同步完成，但至少一个健康探针未通过，请查看结果。"
+                    : health.All(item => item.Success)
+                        ? "L1 只读接入完成，声明式健康探针全部通过。"
+                        : "L1 只读接入完成，但至少一个健康探针未通过，请查看结果。"
             };
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
@@ -267,6 +279,23 @@ public sealed class ExistingProjectOnboardingService(
         string? existingProjectManifestJson = null;
         if (manifest is not null && projectId is not null && projectRoot is not null && dataRoot is not null && logsRoot is not null)
         {
+            var pm2Components = manifest["components"]!.AsArray().OfType<JsonObject>()
+                .Where(static component =>
+                    string.Equals(
+                        component["kind"]?.GetValue<string>(),
+                        "pm2Legacy",
+                        StringComparison.Ordinal))
+                .ToArray();
+            Pm2OwnerDiscoveryResult? pm2Discovery = null;
+            if (pm2Components.Length > 0)
+            {
+                pm2Discovery = await _pm2OwnerDiscovery.DiscoverAsync(
+                    manifest,
+                    projectRoot,
+                    cancellationToken);
+                problems.AddRange(pm2Discovery.Problems);
+            }
+
             var existingPorts = await ReadExistingPortBindingsAsync(
                 projectId,
                 environment,
@@ -277,15 +306,21 @@ public sealed class ExistingProjectOnboardingService(
                 var componentId = component["id"]!.GetValue<string>();
                 var componentDisplayName = component["displayName"]!.GetValue<string>();
                 var kind = component["kind"]!.GetValue<string>();
-                var proposal = ResolveNativeResource(
-                    componentId,
-                    componentDisplayName,
-                    kind,
-                    projectId,
-                    displayName ?? projectId,
-                    projectRoot,
-                    request.NativeNames,
-                    inventory);
+                var proposal = kind == "pm2Legacy"
+                    ? BuildPm2Proposal(
+                        component,
+                        componentId,
+                        componentDisplayName,
+                        pm2Discovery)
+                    : ResolveNativeResource(
+                        componentId,
+                        componentDisplayName,
+                        kind,
+                        projectId,
+                        displayName ?? projectId,
+                        projectRoot,
+                        request.NativeNames,
+                        inventory);
                 components.Add(proposal);
                 if (kind == "interactiveApp")
                 {
@@ -308,9 +343,10 @@ public sealed class ExistingProjectOnboardingService(
                 }
                 if (proposal.RequiresInput || proposal.NativeName is null)
                 {
-                    problems.Add(kind == "pm2Legacy"
-                        ? $"组件 {componentId} 是遗留 PM2；必须先配置 owner Bridge，当前通用向导不会猜测 PM2 daemon 归属"
-                        : $"组件 {componentId} 无法唯一匹配主机原生资源，请填写精确原生名称");
+                    if (kind != "pm2Legacy")
+                    {
+                        problems.Add($"组件 {componentId} 无法唯一匹配主机原生资源，请填写精确原生名称");
+                    }
                     continue;
                 }
 
@@ -366,7 +402,9 @@ public sealed class ExistingProjectOnboardingService(
                 .Select(item => item["key"]?.GetValue<string>())
                 .Where(value => value is not null)
                 .ToArray() ?? [];
-            if (requiredSettings.Length > 0)
+            var allComponentsArePm2 = pm2Components.Length > 0 &&
+                                      pm2Components.Length == manifest["components"]!.AsArray().Count;
+            if (requiredSettings.Length > 0 && !allComponentsArePm2)
             {
                 problems.Add($"项目存在必填配置，通用 L1 向导不会猜值：{string.Join(", ", requiredSettings)}");
             }
@@ -393,6 +431,17 @@ public sealed class ExistingProjectOnboardingService(
                 ["portBindings"] = portBindings,
                 ["settings"] = new JsonArray()
             };
+
+            if (pm2Discovery?.Success == true)
+            {
+                binding["legacyPm2"] = new JsonObject
+                {
+                    ["ownerSid"] = pm2Discovery.OwnerSid,
+                    ["snapshotFileName"] = pm2Discovery.SnapshotFileName,
+                    ["controlPipeName"] = pm2Discovery.ControlPipeName,
+                    ["maxAgeSeconds"] = 30
+                };
+            }
 
             if (manifest["components"]!.AsArray().OfType<JsonObject>()
                 .Any(static component => component["kind"]?.GetValue<string>() == "interactiveApp"))
@@ -438,6 +487,7 @@ public sealed class ExistingProjectOnboardingService(
         var bindingDestination = Path.Combine(
             _paths.ManifestDirectory,
             $"{safeProjectId}.{safeEnvironment}.{safeHostId}.binding.json");
+        var alreadyOnboarded = File.Exists(projectDestination) && File.Exists(bindingDestination);
         var bindingJson = binding?.ToJsonString(jsonOptions) ?? string.Empty;
         var canApply = problems.Count == 0 && manifest is not null && binding is not null;
         var planToken = canApply
@@ -450,8 +500,15 @@ public sealed class ExistingProjectOnboardingService(
         {
             steps.Add("项目声明通过内置 v1 Schema 和语义校验");
             steps.Add("所有组件已唯一匹配当前主机原生资源");
+            if (components.Any(static component => component.Kind == "pm2Legacy"))
+            {
+                steps.Add("全部 PM2 组件已在同一 owner 下按 name、cwd、script 唯一精确匹配");
+                steps.Add("现有运行配置和 Secret 保持由项目持有；CompanyOps 未读取或复制其值");
+            }
             steps.Add("端口、目录和现有 CompanyOps 声明未发现冲突");
-            steps.Add("确认后只导入 ProjectManifest 和 EnvironmentBinding，不控制业务服务");
+            steps.Add(alreadyOnboarded
+                ? "确认后只同步 ProjectManifest 和 EnvironmentBinding，不控制业务服务"
+                : "确认后只导入 ProjectManifest 和 EnvironmentBinding，不控制业务服务");
         }
 
         var result = new ExistingProjectOnboardingResult(
@@ -462,7 +519,7 @@ public sealed class ExistingProjectOnboardingService(
             environment,
             hostId,
             canApply,
-            false,
+            alreadyOnboarded,
             planToken,
             components,
             ports,
@@ -470,7 +527,9 @@ public sealed class ExistingProjectOnboardingService(
             steps,
             problems,
             canApply ? null : "onboarding_preflight_failed",
-            canApply ? "只读接入预检通过。" : "只读接入预检未通过，请按问题提示修正。" );
+            canApply
+                ? alreadyOnboarded ? "已接入项目的声明同步预检通过。" : "首次只读接入预检通过。"
+                : alreadyOnboarded ? "已接入项目的声明同步预检未通过，请按问题提示修正。" : "只读接入预检未通过，请按问题提示修正。" );
         return new OnboardingPlan(
             result,
             projectId ?? string.Empty,
@@ -896,6 +955,46 @@ public sealed class ExistingProjectOnboardingService(
             Suggest(ownedNames.ToArray(), projectId, projectDisplayName, componentId, componentDisplayName));
     }
 
+    private static OnboardingComponentProposal BuildPm2Proposal(
+        JsonObject component,
+        string componentId,
+        string componentDisplayName,
+        Pm2OwnerDiscoveryResult? discovery)
+    {
+        var processName = component["pm2"]?["name"]?.GetValue<string>();
+        Pm2OwnershipResult? ownership = null;
+        if (discovery?.Success == true)
+        {
+            discovery.Components.TryGetValue(componentId, out ownership);
+        }
+        if (ownership is null ||
+            ownership.State != Pm2OwnershipState.Matched ||
+            ownership.Process is null)
+        {
+            return new OnboardingComponentProposal(
+                componentId,
+                componentDisplayName,
+                "pm2Legacy",
+                processName,
+                true,
+                processName is null ? [] : [processName],
+                MatchDetail: ownership?.Detail);
+        }
+
+        return new OnboardingComponentProposal(
+            componentId,
+            componentDisplayName,
+            "pm2Legacy",
+            ownership.Process.Name,
+            false,
+            [ownership.Process.Name],
+            ownership.Process.PmId,
+            discovery!.OwnerSid,
+            ownership.Process.Cwd,
+            ownership.Process.Script,
+            ownership.Detail);
+    }
+
     private static bool IsInventoryItemUnderProjectRoot(
         string kind,
         InventoryItem item,
@@ -964,11 +1063,14 @@ public sealed class ExistingProjectOnboardingService(
                 problem = $"组件 {componentId} 必须声明项目目录内的 .exe 和工作目录";
                 return false;
             }
-            if (!File.Exists(exe) || !Directory.Exists(cwd))
+            if (!Directory.Exists(cwd))
             {
-                problem = $"组件 {componentId} 的声明 EXE 或工作目录在服务器上不存在";
+                problem = $"组件 {componentId} 的声明工作目录在服务器上不存在";
                 return false;
             }
+            // L1 may declare an interactive component before its first immutable release is
+            // installed. The missing EXE keeps the component Declared/Missing and therefore
+            // cannot be operated; the L3 release payload must provide the real executable.
             return true;
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)

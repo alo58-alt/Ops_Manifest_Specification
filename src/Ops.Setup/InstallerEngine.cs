@@ -285,7 +285,9 @@ internal sealed class InstallerEngine
         var preparedRoot = Path.Combine(existing.InstallRoot, $".upgrade-new-{transactionId}");
         var backupRoot = Path.Combine(existing.InstallRoot, $".upgrade-backup-{transactionId}");
         var servicesStopped = false;
+        var bridgeStopped = false;
         var switchedComponents = new List<string>();
+        string? bridgeOwnerSid = null;
         try
         {
             CopyVerifiedPackagePayload(stagingRoot);
@@ -310,6 +312,12 @@ internal sealed class InstallerEngine
                 }
                 File.Copy(currentConfig, preparedConfig, overwrite: true);
             }
+            var currentBridgeConfig = Path.Combine(existing.InstallRoot, @"Pm2Bridge\appsettings.json");
+            var preparedBridgeConfig = Path.Combine(preparedRoot, @"Pm2Bridge\appsettings.json");
+            if (File.Exists(currentBridgeConfig))
+            {
+                File.Copy(currentBridgeConfig, preparedBridgeConfig, overwrite: true);
+            }
             UpdateDeploymentAuthorization(
                 Path.Combine(preparedRoot, "Agent", "appsettings.json"),
                 enableControlledUpdates,
@@ -317,10 +325,19 @@ internal sealed class InstallerEngine
 
             ApplyDirectoryAcl(preparedRoot, "*S-1-5-18:(OI)(CI)F");
             ApplyDirectoryAcl(preparedRoot, "*S-1-5-20:(OI)(CI)RX");
+            bridgeOwnerSid = TryReadPm2BridgeOwnerSid(preparedBridgeConfig);
+            if (bridgeOwnerSid is not null)
+            {
+                ApplyDirectoryAcl(
+                    Path.Combine(preparedRoot, "Pm2Bridge"),
+                    $"*{bridgeOwnerSid}:(OI)(CI)RX");
+            }
             Directory.CreateDirectory(backupRoot);
 
             progress.Report("正在停止 CompanyOps 自身服务…");
             StopSessionAgentIfRunning(existing.InstallRoot);
+            StopPm2BridgeIfConfigured(existing.InstallRoot, bridgeOwnerSid);
+            bridgeStopped = bridgeOwnerSid is not null;
             StopServiceIfRunning(ConsoleServiceName);
             StopServiceIfRunning(AgentServiceName);
             servicesStopped = true;
@@ -368,6 +385,8 @@ internal sealed class InstallerEngine
             WaitForConsole(existing.InstallRoot, TimeSpan.FromSeconds(30));
             ConfigureSessionAgentFromAgentSettings(existing.InstallRoot);
             RegisterAndStartSessionAgent(existing.InstallRoot);
+            StartPm2BridgeIfConfigured(existing.InstallRoot, bridgeOwnerSid);
+            bridgeStopped = false;
 
             var backupRemoved = TryDeleteDirectory(backupRoot);
             if (!backupRemoved)
@@ -383,9 +402,29 @@ internal sealed class InstallerEngine
         }
         catch (Exception exception)
         {
-            var recovery = servicesStopped
-                ? RestoreUpgrade(existing.InstallRoot, preparedRoot, backupRoot, switchedComponents)
-                : "尚未切换运行版本";
+            string recovery;
+            if (servicesStopped)
+            {
+                recovery = RestoreUpgrade(
+                    existing.InstallRoot,
+                    preparedRoot,
+                    backupRoot,
+                    switchedComponents,
+                    bridgeOwnerSid);
+            }
+            else if (bridgeStopped)
+            {
+                recovery = StartPm2BridgeIfConfigured(
+                    existing.InstallRoot,
+                    bridgeOwnerSid,
+                    throwOnFailure: false)
+                    ? "尚未切换运行版本；PM2 owner Bridge 已恢复"
+                    : "尚未切换运行版本；PM2 owner Bridge 恢复失败";
+            }
+            else
+            {
+                recovery = "尚未切换运行版本";
+            }
             throw new InvalidOperationException(
                 $"{exception.Message}\n\n升级未完成，失败恢复：{recovery}",
                 exception);
@@ -401,10 +440,19 @@ internal sealed class InstallerEngine
         string installRoot,
         string preparedRoot,
         string backupRoot,
-        IReadOnlyCollection<string> switchedComponents)
+        IReadOnlyCollection<string> switchedComponents,
+        string? bridgeOwnerSid)
     {
+        try
+        {
+            StopPm2BridgeIfConfigured(installRoot, bridgeOwnerSid);
+        }
+        catch (Exception exception)
+        {
+            return $"无法停止失败版本的 PM2 owner Bridge：{exception.Message}";
+        }
         RunProcess("sc.exe", ["stop", ConsoleServiceName], throwOnFailure: false);
-            RunProcess("sc.exe", ["stop", AgentServiceName], throwOnFailure: false);
+        RunProcess("sc.exe", ["stop", AgentServiceName], throwOnFailure: false);
         try
         {
             WaitForService(ConsoleServiceName, "STOPPED", TimeSpan.FromSeconds(15));
@@ -461,7 +509,11 @@ internal sealed class InstallerEngine
         {
             var agent = RunProcess("sc.exe", ["start", AgentServiceName], throwOnFailure: false);
             var console = RunProcess("sc.exe", ["start", ConsoleServiceName], throwOnFailure: false);
-            if (agent.ExitCode == 0 && console.ExitCode == 0)
+            var bridge = StartPm2BridgeIfConfigured(
+                installRoot,
+                bridgeOwnerSid,
+                throwOnFailure: false);
+            if (agent.ExitCode == 0 && console.ExitCode == 0 && bridge)
             {
                 TryDeleteDirectory(backupRoot);
                 return "旧版本已恢复并重新启动";
@@ -865,6 +917,28 @@ internal sealed class InstallerEngine
         File.WriteAllText(settingsPath, settings.ToJsonString(JsonOptions));
     }
 
+    private static string? TryReadPm2BridgeOwnerSid(string settingsPath)
+    {
+        if (!File.Exists(settingsPath))
+        {
+            return null;
+        }
+
+        var settings = JsonNode.Parse(File.ReadAllText(settingsPath))?.AsObject()
+            ?? throw new InvalidOperationException("PM2 Bridge 配置不是有效 JSON。");
+        var ownerSid = settings["Pm2Bridge"]?["OwnerSid"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(ownerSid))
+        {
+            return null;
+        }
+        if (!Regex.IsMatch(ownerSid, @"^S-1-(?:[0-9]+-)+[0-9]+$"))
+        {
+            throw new InvalidOperationException("PM2 Bridge 配置中的 OwnerSid 格式无效。");
+        }
+
+        return ownerSid;
+    }
+
     private static void ConfigureSessionAgentFromAgentSettings(string installRoot)
     {
         var agentSettingsPath = Path.Combine(installRoot, "Agent", "appsettings.json");
@@ -948,6 +1022,93 @@ internal sealed class InstallerEngine
                 catch (System.ComponentModel.Win32Exception) { }
             }
         }
+    }
+
+    private static void StopPm2BridgeIfConfigured(string installRoot, string? ownerSid)
+    {
+        if (ownerSid is null)
+        {
+            return;
+        }
+
+        var taskName = $@"\CompanyOps\CompanyOps-Pm2Bridge-{ownerSid}";
+        var query = RunProcess("schtasks.exe", ["/Query", "/TN", taskName], throwOnFailure: false);
+        if (query.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"PM2 Bridge 已配置但登录任务不存在，拒绝在无法恢复 owner Bridge 的情况下升级：{taskName}");
+        }
+
+        RunProcess("schtasks.exe", ["/End", "/TN", taskName], throwOnFailure: false);
+        var executable = Path.GetFullPath(
+            Path.Combine(installRoot, "Pm2Bridge", "CompanyOps.Pm2Bridge.exe"));
+        foreach (var process in Process.GetProcessesByName("CompanyOps.Pm2Bridge"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (!ProcessPathEquals(process, executable))
+                    {
+                        continue;
+                    }
+                    process.Kill(entireProcessTree: true);
+                    if (!process.WaitForExit(10_000))
+                    {
+                        throw new InvalidOperationException($"PM2 Bridge PID {process.Id} 未退出。");
+                    }
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // The scheduled task may have completed between enumeration and inspection.
+                }
+            }
+        }
+    }
+
+    private static bool StartPm2BridgeIfConfigured(
+        string installRoot,
+        string? ownerSid,
+        bool throwOnFailure = true)
+    {
+        if (ownerSid is null)
+        {
+            return true;
+        }
+
+        var executable = Path.GetFullPath(
+            Path.Combine(installRoot, "Pm2Bridge", "CompanyOps.Pm2Bridge.exe"));
+        var taskName = $@"\CompanyOps\CompanyOps-Pm2Bridge-{ownerSid}";
+        var started = RunProcess(
+            "schtasks.exe",
+            ["/Run", "/TN", taskName],
+            throwOnFailure: false);
+        if (started.ExitCode != 0)
+        {
+            if (throwOnFailure)
+            {
+                throw new InvalidOperationException(
+                    $"CompanyOps 已升级，但 PM2 owner Bridge 登录任务重新启动失败：{taskName}");
+            }
+            return false;
+        }
+
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            if (Process.GetProcessesByName("CompanyOps.Pm2Bridge").Any(process =>
+                    ProcessPathEquals(process, executable)))
+            {
+                return true;
+            }
+            Thread.Sleep(250);
+        }
+
+        if (throwOnFailure)
+        {
+            throw new InvalidOperationException(
+                "PM2 owner Bridge 登录任务已启动，但未找到升级后的 Bridge 进程。");
+        }
+        return false;
     }
 
     private static bool ProcessPathEquals(Process process, string expected)

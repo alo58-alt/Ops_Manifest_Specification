@@ -15,6 +15,52 @@ public sealed class Pm2SnapshotReader(
     private const long MaximumSnapshotBytes = 4 * 1024 * 1024;
     private readonly ResolvedOpsPaths _paths = pathResolver.Resolve();
 
+    public async Task<Pm2SnapshotReadResult> ReadDiscoveryAsync(
+        string fileName,
+        int maxAgeSeconds,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal) ||
+            !fileName.StartsWith("CompanyOps.Pm2Bridge.", StringComparison.Ordinal) ||
+            !fileName.EndsWith(".discovery.json", StringComparison.Ordinal))
+        {
+            return new Pm2SnapshotReadResult(
+                null,
+                Pm2OwnershipState.Conflict,
+                "PM2 发现快照文件名无效");
+        }
+
+        var result = await ReadSnapshotFileAsync(fileName, null, maxAgeSeconds, cancellationToken);
+        if (result.State != Pm2OwnershipState.Matched || result.Snapshot is null)
+        {
+            return result;
+        }
+
+        string expectedFileName;
+        try
+        {
+            expectedFileName = Pm2SnapshotProtocol.DiscoveryFileName(result.Snapshot.OwnerSid);
+        }
+        catch (ArgumentException exception)
+        {
+            return new Pm2SnapshotReadResult(
+                null,
+                Pm2OwnershipState.Conflict,
+                exception.Message);
+        }
+
+        if (!string.Equals(fileName, expectedFileName, StringComparison.Ordinal) ||
+            !IsSafePipeName(result.Snapshot.ControlPipeName))
+        {
+            return new Pm2SnapshotReadResult(
+                null,
+                Pm2OwnershipState.Conflict,
+                "PM2 发现快照的 owner SID、文件名或控制管道不一致");
+        }
+
+        return result;
+    }
+
     public async Task<Pm2SnapshotReadResult> ReadAsync(
         LegacyPm2Claim claim,
         CancellationToken cancellationToken)
@@ -29,10 +75,20 @@ public sealed class Pm2SnapshotReader(
                 claim.BindingError ?? "PM2 owner/snapshot 未绑定");
         }
 
-        if (!string.Equals(
-                Path.GetFileName(claim.SnapshotFileName),
-                claim.SnapshotFileName,
-                StringComparison.Ordinal))
+        return await ReadSnapshotFileAsync(
+            claim.SnapshotFileName,
+            claim.OwnerSid,
+            claim.MaxAgeSeconds,
+            cancellationToken);
+    }
+
+    private async Task<Pm2SnapshotReadResult> ReadSnapshotFileAsync(
+        string fileName,
+        string? expectedOwnerSid,
+        int maxAgeSeconds,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal))
         {
             return new Pm2SnapshotReadResult(
                 null,
@@ -41,7 +97,7 @@ public sealed class Pm2SnapshotReader(
         }
 
         var snapshotPath = Path.GetFullPath(
-            Path.Combine(_paths.Pm2SnapshotDirectory, claim.SnapshotFileName));
+            Path.Combine(_paths.Pm2SnapshotDirectory, fileName));
         var snapshotRoot = Path.GetFullPath(_paths.Pm2SnapshotDirectory)
                            + Path.DirectorySeparatorChar;
         if (!snapshotPath.StartsWith(snapshotRoot, StringComparison.OrdinalIgnoreCase))
@@ -57,7 +113,7 @@ public sealed class Pm2SnapshotReader(
             return new Pm2SnapshotReadResult(
                 null,
                 Pm2OwnershipState.SnapshotUnavailable,
-                $"PM2 缩减快照不存在：{claim.SnapshotFileName}");
+                $"PM2 缩减快照不存在：{fileName}");
         }
 
         var fileInfo = new FileInfo(snapshotPath);
@@ -76,7 +132,7 @@ public sealed class Pm2SnapshotReader(
             if (snapshot is null ||
                 !string.Equals(
                     snapshot.ProtocolVersion,
-                    "ops-pm2-snapshot/v1",
+                    Pm2SnapshotProtocol.Version,
                     StringComparison.Ordinal))
             {
                 return new Pm2SnapshotReadResult(
@@ -85,9 +141,10 @@ public sealed class Pm2SnapshotReader(
                     "PM2 快照协议版本无效");
             }
 
-            if (!string.Equals(
+            if (expectedOwnerSid is not null &&
+                !string.Equals(
                     snapshot.OwnerSid,
-                    claim.OwnerSid,
+                    expectedOwnerSid,
                     StringComparison.OrdinalIgnoreCase))
             {
                 return new Pm2SnapshotReadResult(
@@ -98,7 +155,7 @@ public sealed class Pm2SnapshotReader(
 
             var age = DateTimeOffset.UtcNow - snapshot.CapturedAt;
             if (age < TimeSpan.FromMinutes(-5) ||
-                age > TimeSpan.FromSeconds(claim.MaxAgeSeconds))
+                age > TimeSpan.FromSeconds(maxAgeSeconds))
             {
                 return new Pm2SnapshotReadResult(
                     snapshot,
@@ -122,4 +179,10 @@ public sealed class Pm2SnapshotReader(
                 $"PM2 快照读取失败：{exception.Message}");
         }
     }
+
+    private static bool IsSafePipeName(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= 128 &&
+        value.All(static character =>
+            char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
 }

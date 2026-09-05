@@ -5,7 +5,8 @@ public sealed record Pm2Snapshot(
     string OwnerSid,
     DateTimeOffset CapturedAt,
     int DaemonPid,
-    IReadOnlyList<Pm2ProcessSnapshot> Processes);
+    IReadOnlyList<Pm2ProcessSnapshot> Processes,
+    string? ControlPipeName = null);
 
 public sealed record Pm2ProcessSnapshot(
     string Name,
