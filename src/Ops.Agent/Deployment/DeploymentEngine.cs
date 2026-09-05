@@ -10,6 +10,13 @@ using System.Collections.Concurrent;
 
 namespace CompanyOps.Agent.Deployment;
 
+public interface IDeploymentExecutor
+{
+    Task<DeploymentResult> ExecuteAsync(
+        DeploymentRequest request,
+        CancellationToken cancellationToken);
+}
+
 public sealed class DeploymentEngine(
     AgentSnapshotCache snapshotCache,
     ArtifactPackageValidator packageValidator,
@@ -20,7 +27,7 @@ public sealed class DeploymentEngine(
     IOpsStateStore stateStore,
     OpsPathResolver pathResolver,
     IOptions<OpsOptions> options,
-    JsonSerializerOptions jsonOptions)
+    JsonSerializerOptions jsonOptions) : IDeploymentExecutor
 {
     private readonly OpsOptions _options = options.Value;
     private readonly ResolvedOpsPaths _paths = pathResolver.Resolve();

@@ -9,6 +9,7 @@
     "revision": 1
   },
   "roots": {
+    "source": "C:\\CompanyOps\\Sources\\sample-system",
     "install": "C:\\CompanyOps\\Apps\\sample-system",
     "data": "C:\\CompanyOps\\Data\\sample-system",
     "logs": "C:\\CompanyOps\\Logs\\sample-system"

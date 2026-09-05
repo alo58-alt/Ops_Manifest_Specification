@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CompanyOps.Agent.Catalog;
 using CompanyOps.Agent.Inventory;
 using CompanyOps.Agent.Onboarding;
@@ -12,6 +13,78 @@ namespace CompanyOps.Agent.Tests;
 
 public sealed class ExistingProjectOnboardingServiceTests
 {
+    [Fact]
+    public async Task PlanAndApply_GitBuildRelease_BindsSeparateSourceAndInstallRoots()
+    {
+        using var directory = new TestDirectory();
+        var projectRoot = Path.Combine(directory.FullPath, "source");
+        var installRoot = Path.Combine(directory.FullPath, "install");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "ops"));
+        Directory.CreateDirectory(installRoot);
+        await WriteProjectManifestAsync(projectRoot);
+        await WriteOpsReadmeAsync(projectRoot);
+        var manifestPath = Path.Combine(projectRoot, "ops", "project-manifest.json");
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(
+            manifestPath,
+            TestContext.Current.CancellationToken))!.AsObject();
+        manifest["update"]!["source"] = JsonNode.Parse(
+            """
+            {
+              "kind": "gitBuildRelease",
+              "remote": "origin",
+              "branch": "master",
+              "remoteUrl": "https://gitee.com/example/onboarding-fixture.git",
+              "buildProfile": "projectReleaseV1"
+            }
+            """);
+        await File.WriteAllTextAsync(
+            manifestPath,
+            manifest.ToJsonString(),
+            TestContext.Current.CancellationToken);
+
+        var fixture = await CreateFixtureAsync(directory.FullPath);
+        fixture.Cache.Update(
+            new InventorySnapshot(
+                "TEST-HOST",
+                DateTimeOffset.UtcNow,
+                [new InventorySection(
+                    "windows-services",
+                    InventorySourceStatus.Available,
+                    [new InventoryItem(
+                        "OnboardingFixture",
+                        "Onboarding Fixture",
+                        "Running",
+                        new Dictionary<string, string?>
+                        {
+                            ["binaryPath"] = Path.Combine(projectRoot, "tools", "nssm.exe")
+                        })])]),
+            new ManifestCatalogSnapshot(DateTimeOffset.UtcNow, []));
+        var request = new ExistingProjectOnboardingRequest(
+            projectRoot,
+            "production",
+            ExistingProjectOnboardingAction.Plan,
+            InstallRoot: installRoot);
+
+        var plan = await fixture.Service.ExecuteAsync(request, TestContext.Current.CancellationToken);
+        Assert.Equal(OperationOutcome.Succeeded, plan.Outcome);
+
+        var applied = await fixture.Service.ExecuteAsync(
+            request with
+            {
+                Action = ExistingProjectOnboardingAction.Apply,
+                ExpectedPlanToken = plan.PlanToken
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(OperationOutcome.Succeeded, applied.Outcome);
+        var bindingPath = Assert.Single(Directory.EnumerateFiles(fixture.ManifestRoot, "*.binding.json"));
+        var binding = JsonNode.Parse(await File.ReadAllTextAsync(
+            bindingPath,
+            TestContext.Current.CancellationToken))!.AsObject();
+        Assert.Equal(projectRoot, binding["roots"]!["source"]!.GetValue<string>());
+        Assert.Equal(installRoot, binding["roots"]!["install"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task PlanAndApply_ImportOnlyManifestAndBinding_WithoutInstalledState()
     {

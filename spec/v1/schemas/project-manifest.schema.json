@@ -123,7 +123,10 @@
           ],
           "properties": {
             "kind": {
-              "const": "gitFastForward"
+              "enum": [
+                "gitFastForward",
+                "gitBuildRelease"
+              ]
             },
             "remote": {
               "type": "string",
@@ -137,8 +140,37 @@
               "type": "string",
               "pattern": "^https://[^@/]+/.+$",
               "maxLength": 500
+            },
+            "buildProfile": {
+              "const": "projectReleaseV1"
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "gitBuildRelease"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "then": {
+                "required": [
+                  "buildProfile"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "buildProfile"
+                  ]
+                }
+              }
+            }
+          ]
         }
       }
     }

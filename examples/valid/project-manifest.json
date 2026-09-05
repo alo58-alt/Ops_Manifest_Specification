@@ -138,6 +138,13 @@
     "strategy": "stopStart",
     "rollbackOnFailure": true,
     "healthTimeoutSeconds": 60,
-    "retainReleaseCount": 2
+    "retainReleaseCount": 2,
+    "source": {
+      "kind": "gitBuildRelease",
+      "remote": "origin",
+      "branch": "main",
+      "remoteUrl": "https://git.example.com/platform/sample-system.git",
+      "buildProfile": "projectReleaseV1"
+    }
   }
 }

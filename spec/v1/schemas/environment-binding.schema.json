@@ -59,6 +59,9 @@
         "logs"
       ],
       "properties": {
+        "source": {
+          "$ref": "#/definitions/absoluteWindowsPath"
+        },
         "install": {
           "$ref": "#/definitions/absoluteWindowsPath"
         },

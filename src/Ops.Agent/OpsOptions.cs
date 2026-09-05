@@ -30,6 +30,10 @@ public sealed class OpsOptions
 
     public string GitExecutablePath { get; set; } = string.Empty;
 
+    public string PowerShellExecutablePath { get; set; } = string.Empty;
+
+    public int GitBuildTimeoutMinutes { get; set; } = 30;
+
     public string[] AllowedProjectInstallRoots { get; set; } = [];
 
     public string[] AllowedClientSids { get; set; } = [];

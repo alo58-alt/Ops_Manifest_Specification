@@ -60,10 +60,14 @@ builder.Services.AddSingleton<IPortRegistryStore, SqlitePortRegistryStore>();
 builder.Services.AddSingleton<IDeploymentEntrypointAdapter, WindowsServiceDeploymentEntrypointAdapter>();
 builder.Services.AddSingleton<IDeploymentActivator, NativeDeploymentActivator>();
 builder.Services.AddSingleton<DeploymentEngine>();
+builder.Services.AddSingleton<IDeploymentExecutor>(
+    static provider => provider.GetRequiredService<DeploymentEngine>());
 builder.Services.AddSingleton<ExistingProjectOnboardingService>();
 builder.Services.AddSingleton<ProjectDirectoryBrowser>();
 builder.Services.AddSingleton<IGitCredentialStore, GitCredentialStore>();
 builder.Services.AddSingleton<IGitCommandRunner, GitCommandRunner>();
+builder.Services.AddSingleton<IProjectReleaseBuildRunner, ProjectReleaseBuildRunner>();
+builder.Services.AddSingleton<IGitBuildReleaseService, GitBuildReleaseService>();
 builder.Services.AddSingleton<GitUpdateService>();
 builder.Services.AddSingleton<FixedCommandRunner>();
 builder.Services.AddSingleton<IPm2OwnerControlBridge, NamedPipePm2OwnerControlBridge>();

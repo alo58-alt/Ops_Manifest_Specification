@@ -1,0 +1,38 @@
+{
+  "$schema": "../../spec/v1/schemas/project-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ProjectManifest",
+  "metadata": {
+    "id": "invalid-git-build",
+    "displayName": "缺少构建能力声明",
+    "owners": [
+      "platform-team"
+    ]
+  },
+  "components": [
+    {
+      "id": "api",
+      "displayName": "API",
+      "kind": "windowsService",
+      "entrypoint": "api-main",
+      "dependsOn": [],
+      "health": [],
+      "service": {
+        "startMode": "automatic"
+      }
+    }
+  ],
+  "ports": [],
+  "configuration": [],
+  "dataDirectories": [],
+  "update": {
+    "strategy": "stopStart",
+    "rollbackOnFailure": true,
+    "source": {
+      "kind": "gitBuildRelease",
+      "remote": "origin",
+      "branch": "main",
+      "remoteUrl": "https://git.example.com/platform/invalid-git-build.git"
+    }
+  }
+}

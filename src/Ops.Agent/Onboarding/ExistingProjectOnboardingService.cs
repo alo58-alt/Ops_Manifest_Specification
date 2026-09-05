@@ -209,8 +209,9 @@ public sealed class ExistingProjectOnboardingService(
         var ports = new List<OnboardingPortProposal>();
         var environment = NormalizeEnvironment(request.Environment, problems);
         var projectRoot = ResolveLocalDirectory(request.ProjectRoot, "项目目录", problems);
-        var dataRoot = ResolveOptionalRoot(request.DataRoot, projectRoot, "数据目录", problems);
-        var logsRoot = ResolveOptionalRoot(request.LogsRoot, projectRoot, "日志目录", problems);
+        var installRoot = ResolveOptionalRoot(request.InstallRoot, projectRoot, "安装目录", problems);
+        var dataRoot = ResolveOptionalRoot(request.DataRoot, installRoot, "数据目录", problems);
+        var logsRoot = ResolveOptionalRoot(request.LogsRoot, installRoot, "日志目录", problems);
         var hostId = _paths.HostId;
         JsonObject? manifest = null;
         string manifestJson = string.Empty;
@@ -277,7 +278,7 @@ public sealed class ExistingProjectOnboardingService(
         JsonObject? binding = null;
         string? existingBindingJson = null;
         string? existingProjectManifestJson = null;
-        if (manifest is not null && projectId is not null && projectRoot is not null && dataRoot is not null && logsRoot is not null)
+        if (manifest is not null && projectId is not null && projectRoot is not null && installRoot is not null && dataRoot is not null && logsRoot is not null)
         {
             var pm2Components = manifest["components"]!.AsArray().OfType<JsonObject>()
                 .Where(static component =>
@@ -423,7 +424,7 @@ public sealed class ExistingProjectOnboardingService(
                 },
                 ["roots"] = new JsonObject
                 {
-                    ["install"] = projectRoot,
+                    ["install"] = installRoot,
                     ["data"] = dataRoot,
                     ["logs"] = logsRoot
                 },
@@ -431,6 +432,17 @@ public sealed class ExistingProjectOnboardingService(
                 ["portBindings"] = portBindings,
                 ["settings"] = new JsonArray()
             };
+            if (string.Equals(
+                    manifest["update"]?["source"]?["kind"]?.GetValue<string>(),
+                    "gitBuildRelease",
+                    StringComparison.Ordinal))
+            {
+                binding["roots"]!["source"] = projectRoot;
+                if (PathsOverlap(projectRoot, installRoot))
+                {
+                    problems.Add("gitBuildRelease 要求源码目录与托管安装目录彼此独立且不能嵌套");
+                }
+            }
 
             if (pm2Discovery?.Success == true)
             {
@@ -468,7 +480,7 @@ public sealed class ExistingProjectOnboardingService(
                 var existingDocuments = await ValidateHostConflictsAsync(
                     projectId,
                     environment,
-                    projectRoot,
+                    installRoot,
                     manifest,
                     components,
                     binding,
@@ -702,6 +714,18 @@ public sealed class ExistingProjectOnboardingService(
             {
                 problems.Add($"安装目录与 {existingProject}/{existingEnvironment} 重叠：{existingRoot}");
             }
+            var proposedSourceRoot = proposedBinding["roots"]?["source"]?.GetValue<string>();
+            var existingSourceRoot = existing.Root["roots"]?["source"]?.GetValue<string>();
+            if (proposedSourceRoot is not null &&
+                ((existingRoot is not null && PathsOverlap(proposedSourceRoot, existingRoot)) ||
+                 (existingSourceRoot is not null && PathsOverlap(proposedSourceRoot, existingSourceRoot))))
+            {
+                problems.Add($"源码目录与 {existingProject}/{existingEnvironment} 的受管目录重叠");
+            }
+            if (existingSourceRoot is not null && PathsOverlap(installRoot, existingSourceRoot))
+            {
+                problems.Add($"安装目录与 {existingProject}/{existingEnvironment} 的源码目录重叠");
+            }
 
             var existingNames = existing.Root["componentBindings"]?.AsArray().OfType<JsonObject>()
                 .Select(item => item["nativeName"]?.GetValue<string>())
@@ -777,6 +801,10 @@ public sealed class ExistingProjectOnboardingService(
     {
         var existingImmutable = existing.DeepClone().AsObject();
         var proposedImmutable = proposed.DeepClone().AsObject();
+        if (existingImmutable["roots"]?["source"] is null)
+        {
+            proposedImmutable["roots"]?.AsObject().Remove("source");
+        }
         existingImmutable.Remove("portBindings");
         proposedImmutable.Remove("portBindings");
         existingImmutable.Remove("interactiveSession");

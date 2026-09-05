@@ -295,11 +295,16 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             problems)
         {
             InstallRoot = String(binding, "roots", "install"),
+            SourceRoot = String(binding, "roots", "source"),
             HasInstalledState = installed is not null,
             GitUpdateEnabled = string.Equals(
                 String(manifest, "update", "source", "kind"),
                 "gitFastForward",
-                StringComparison.Ordinal)
+                StringComparison.Ordinal) || string.Equals(
+                String(manifest, "update", "source", "kind"),
+                "gitBuildRelease",
+                StringComparison.Ordinal),
+            GitUpdateKind = String(manifest, "update", "source", "kind")
         };
     }
 
@@ -322,6 +327,12 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             ?? new Dictionary<string, JsonObject[]>(StringComparer.Ordinal);
 
         var result = new List<ProjectComponentRuntimeView>();
+        var runtimeOwnershipRoot = installed is null && string.Equals(
+            String(manifest, "update", "source", "kind"),
+            "gitBuildRelease",
+            StringComparison.Ordinal)
+            ? String(binding, "roots", "source")
+            : String(binding, "roots", "install");
         foreach (var component in manifest["components"]?.AsArray().OfType<JsonObject>() ?? [])
         {
             var id = String(component, "id") ?? "unknown";
@@ -350,7 +361,8 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                     installedNativeId,
                     component,
                     binding,
-                    inventory);
+                    inventory,
+                    runtimeOwnershipRoot);
             }
             else if (stateMatches is null)
             {
@@ -361,7 +373,8 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                     installedNativeId,
                     component,
                     binding,
-                    inventory);
+                    inventory,
+                    runtimeOwnershipRoot);
                 if (ownership == ComponentOwnershipStatus.Owned)
                 {
                     detail = "组件由增量声明新增，当前原生资源归属已验证";
@@ -374,7 +387,14 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
             }
             else
             {
-                (ownership, detail) = CorrelateRuntime(kind, expectedNativeId, installedNativeId, component, binding, inventory);
+                (ownership, detail) = CorrelateRuntime(
+                    kind,
+                    expectedNativeId,
+                    installedNativeId,
+                    component,
+                    binding,
+                    inventory,
+                    runtimeOwnershipRoot);
             }
 
             if (ownership == ComponentOwnershipStatus.Conflict)
@@ -406,7 +426,8 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
         string? installedNativeId,
         JsonObject component,
         JsonObject binding,
-        InventorySnapshot inventory)
+        InventorySnapshot inventory,
+        string? runtimeOwnershipRoot)
     {
         if (kind is not ("pm2Legacy" or "interactiveApp") && !Equals(expectedNativeId, installedNativeId))
         {
@@ -475,10 +496,9 @@ public sealed class ProjectRegistry(OpsPathResolver pathResolver) : IProjectRegi
                 : (ComponentOwnershipStatus.Conflict, "已登记的原生资源在主机盘点中不唯一");
         }
 
-        if (kind == "windowsService" && !string.IsNullOrWhiteSpace(String(binding, "roots", "install")))
+        if (kind == "windowsService" && !string.IsNullOrWhiteSpace(runtimeOwnershipRoot))
         {
-            var installRoot = String(binding, "roots", "install");
-            if (!WindowsServiceBelongsToProject(inventoryMatches[0], installRoot, out var detail))
+            if (!WindowsServiceBelongsToProject(inventoryMatches[0], runtimeOwnershipRoot, out var detail))
             {
                 return (ComponentOwnershipStatus.Conflict, detail);
             }

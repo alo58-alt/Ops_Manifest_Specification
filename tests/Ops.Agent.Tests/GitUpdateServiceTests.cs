@@ -164,6 +164,26 @@ public sealed class GitUpdateServiceTests
         Assert.True(audit.Data?.GetProperty("rolledBack").GetBoolean());
     }
 
+    [Fact]
+    public async Task Apply_FirstGitBuildRelease_AllowsMissingInteractiveAppAndNullInstalledCommit()
+    {
+        using var directory = new TestDirectory();
+        var runner = SuccessfulRunner("server.py\n");
+        var buildRelease = new RecordingGitBuildReleaseService();
+        var service = await CreateServiceAsync(
+            directory,
+            runner,
+            buildRelease: buildRelease,
+            useBuildReleaseManifest: true);
+        var request = Request(GitUpdateAction.Apply) with { ExpectedCurrentCommit = null };
+
+        var result = await service.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.Equal(OperationOutcome.Succeeded, result.Outcome);
+        Assert.Single(buildRelease.Calls);
+        Assert.Empty(runner.Calls);
+    }
+
     private static GitUpdateRequest Request(GitUpdateAction action) =>
         new(
             $"git-{action}",
@@ -203,23 +223,25 @@ public sealed class GitUpdateServiceTests
         TestDirectory directory,
         FakeGitCommandRunner runner,
         RecordingWindowsServiceAdapter? adapter = null,
-        IGitCredentialStore? credentials = null)
+        IGitCredentialStore? credentials = null,
+        IGitBuildReleaseService? buildRelease = null,
+        bool useBuildReleaseManifest = false)
     {
         Directory.CreateDirectory(Path.Combine(directory.FullPath, ".git"));
         var manifestPath = Path.Combine(directory.FullPath, "webquizbot.project-manifest.json");
         await File.WriteAllTextAsync(
             manifestPath,
-            """
+            $$"""
             {
               "metadata": { "id": "webquizbot" },
               "update": {
                 "rollbackOnFailure": true,
                 "healthTimeoutSeconds": 60,
                 "source": {
-                  "kind": "gitFastForward",
+                  "kind": "{{(useBuildReleaseManifest ? "gitBuildRelease" : "gitFastForward")}}",
                   "remote": "origin",
                   "branch": "master",
-                  "remoteUrl": "https://gitee.com/xu-zong2/webquizbot.git"
+                  "remoteUrl": "https://gitee.com/xu-zong2/webquizbot.git"{{(useBuildReleaseManifest ? ",\n                  \"buildProfile\": \"projectReleaseV1\"" : string.Empty)}}
                 }
               }
             }
@@ -242,13 +264,26 @@ public sealed class GitUpdateServiceTests
             ProjectBindingStatus.Declared,
             null,
             1,
-            [new ProjectComponentRuntimeView(
-                "api", "API", "windowsService", "WebQuizBot", "WebQuizBot",
-                ComponentOwnershipStatus.Owned, "running", "healthy", null)],
+            useBuildReleaseManifest
+                ? [
+                    new ProjectComponentRuntimeView(
+                        "api", "API", "windowsService", "WebQuizBot", "WebQuizBot",
+                        ComponentOwnershipStatus.Owned, "running", "healthy", null),
+                    new ProjectComponentRuntimeView(
+                        "browser-host", "BrowserHost", "interactiveApp", "WebQuizBot.BrowserHost.exe", null,
+                        ComponentOwnershipStatus.Missing, "missing", "unknown", null)
+                ]
+                : [new ProjectComponentRuntimeView(
+                    "api", "API", "windowsService", "WebQuizBot", "WebQuizBot",
+                    ComponentOwnershipStatus.Owned, "running", "healthy", null)],
             [])
         {
-            InstallRoot = directory.FullPath,
-            GitUpdateEnabled = true
+            InstallRoot = useBuildReleaseManifest
+                ? Path.Combine(Path.GetDirectoryName(directory.FullPath)!, Path.GetFileName(directory.FullPath) + "-install")
+                : directory.FullPath,
+            SourceRoot = useBuildReleaseManifest ? directory.FullPath : null,
+            GitUpdateEnabled = true,
+            GitUpdateKind = useBuildReleaseManifest ? "gitBuildRelease" : "gitFastForward"
         };
         var cache = new AgentSnapshotCache();
         cache.Update(
@@ -269,6 +304,7 @@ public sealed class GitUpdateServiceTests
             [adapter],
             runner,
             credentials ?? new GitCredentialStore(resolver),
+            buildRelease ?? new RecordingGitBuildReleaseService(),
             options,
             jsonOptions);
     }
@@ -276,6 +312,32 @@ public sealed class GitUpdateServiceTests
     private sealed class NoopSnapshotRefresher : IOperationSnapshotRefresher
     {
         public Task RefreshAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingGitBuildReleaseService : IGitBuildReleaseService
+    {
+        public ConcurrentQueue<GitUpdateRequest> Calls { get; } = new();
+
+        public Task<GitUpdateResult> ExecuteAsync(
+            GitUpdateRequest request,
+            ProjectRuntimeView project,
+            System.Text.Json.Nodes.JsonObject source,
+            CancellationToken cancellationToken)
+        {
+            Calls.Enqueue(request);
+            return Task.FromResult(new GitUpdateResult(
+                request.OperationId,
+                request.Action,
+                OperationOutcome.Succeeded,
+                request.ProjectId,
+                request.Environment,
+                true,
+                false,
+                request.ExpectedCurrentCommit,
+                request.ExpectedRemoteCommit,
+                [],
+                ["delegated"]));
+        }
     }
 
     private sealed class RecordingWindowsServiceAdapter : IComponentControlAdapter

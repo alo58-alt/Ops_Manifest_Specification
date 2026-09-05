@@ -29,6 +29,7 @@ public sealed class GitUpdateService
     private readonly IReadOnlyDictionary<string, IComponentControlAdapter> _controlAdapters;
     private readonly IGitCommandRunner _git;
     private readonly IGitCredentialStore _credentials;
+    private readonly IGitBuildReleaseService _buildReleaseService;
     private readonly OpsOptions _options;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ConcurrentDictionary<string, IdempotentGitUpdate> _operations =
@@ -47,6 +48,7 @@ public sealed class GitUpdateService
         IEnumerable<IComponentControlAdapter> adapters,
         IGitCommandRunner git,
         IGitCredentialStore credentials,
+        IGitBuildReleaseService buildReleaseService,
         IOptions<OpsOptions> options,
         JsonSerializerOptions jsonOptions)
     {
@@ -58,8 +60,35 @@ public sealed class GitUpdateService
         _controlAdapters = adapters.ToDictionary(static adapter => adapter.Kind, StringComparer.Ordinal);
         _git = git;
         _credentials = credentials;
+        _buildReleaseService = buildReleaseService;
         _options = options.Value;
         _jsonOptions = jsonOptions;
+    }
+
+    public GitUpdateService(
+        AgentSnapshotCache snapshotCache,
+        IOpsStateStore stateStore,
+        OperationGate gate,
+        IOperationSnapshotRefresher snapshotRefresher,
+        IComponentHealthGate healthGate,
+        IEnumerable<IComponentControlAdapter> adapters,
+        IGitCommandRunner git,
+        IGitCredentialStore credentials,
+        IOptions<OpsOptions> options,
+        JsonSerializerOptions jsonOptions)
+        : this(
+            snapshotCache,
+            stateStore,
+            gate,
+            snapshotRefresher,
+            healthGate,
+            adapters,
+            git,
+            credentials,
+            new UnsupportedGitBuildReleaseService(),
+            options,
+            jsonOptions)
+    {
     }
 
     public Task<GitUpdateResult> ExecuteAsync(
@@ -153,14 +182,15 @@ public sealed class GitUpdateService
         var manifest = JsonNode.Parse(
             await File.ReadAllTextAsync(manifestEntry.Path, cancellationToken))?.AsObject();
         var source = manifest?["update"]?["source"]?.AsObject();
-        if (source?["kind"]?.GetValue<string>() != "gitFastForward")
+        var sourceKind = source?["kind"]?.GetValue<string>();
+        if (sourceKind is not ("gitFastForward" or "gitBuildRelease"))
         {
             return await AuditCredentialAsync(
-                CredentialFailure(request, "git_update_not_declared", "项目没有声明 gitFastForward 更新来源"),
+                CredentialFailure(request, "git_update_not_declared", "项目没有声明受支持的 Git 更新来源"),
                 cancellationToken);
         }
 
-        var expectedRemoteUrl = source["remoteUrl"]?.GetValue<string>() ?? string.Empty;
+        var expectedRemoteUrl = source!["remoteUrl"]?.GetValue<string>() ?? string.Empty;
         string normalizedRemote;
         try
         {
@@ -173,12 +203,18 @@ public sealed class GitUpdateService
                 cancellationToken);
         }
 
-        var repositoryRoot = ResolveRepositoryRoot(project.InstallRoot);
+        var repositoryRoot = ResolveRepositoryRoot(
+            sourceKind == "gitBuildRelease" ? project.SourceRoot : project.InstallRoot);
         var remote = source["remote"]?.GetValue<string>() ?? string.Empty;
         if (repositoryRoot is null || string.IsNullOrWhiteSpace(remote))
         {
             return await AuditCredentialAsync(
-                CredentialFailure(request, "repository_invalid", "项目安装目录不是可用的独立 Git 仓库"),
+                CredentialFailure(
+                    request,
+                    "repository_invalid",
+                    sourceKind == "gitBuildRelease"
+                        ? "项目源码目录不是可用的独立 Git 仓库"
+                        : "项目安装目录不是可用的独立 Git 仓库"),
                 cancellationToken);
         }
         var actualRemote = await _git.RunAsync(
@@ -245,11 +281,10 @@ public sealed class GitUpdateService
             project.Generation != request.ExpectedGeneration ||
             project.Components.Count == 0 ||
             project.Components.Any(component =>
-                component.Kind is not ("windowsService" or "interactiveApp") ||
-                component.Ownership != ComponentOwnershipStatus.Owned))
+                component.Kind is not ("windowsService" or "interactiveApp")))
         {
             return await AuditAsync(
-                Reject(request, "ownership_not_proven", "Git 更新仅允许全部组件都已精确归属的 Windows Service 或用户会话程序"),
+                Reject(request, "ownership_not_proven", "Git 更新仅允许无归属冲突的 Windows Service 或用户会话程序"),
                 cancellationToken);
         }
 
@@ -272,10 +307,51 @@ public sealed class GitUpdateService
                 cancellationToken);
         }
         var source = manifest?["update"]?["source"]?.AsObject();
-        if (source?["kind"]?.GetValue<string>() != "gitFastForward")
+        var sourceKind = source?["kind"]?.GetValue<string>();
+        if (source is not null && sourceKind == "gitBuildRelease")
+        {
+            var invalidOwnership = project.Components.Any(component =>
+                component.Kind == "windowsService"
+                    ? component.Ownership != ComponentOwnershipStatus.Owned
+                    : project.HasInstalledState
+                        ? component.Ownership != ComponentOwnershipStatus.Owned
+                        : component.Ownership is not (
+                            ComponentOwnershipStatus.Owned or ComponentOwnershipStatus.Missing));
+            if (invalidOwnership)
+            {
+                return await AuditAsync(
+                    Reject(
+                        request,
+                        "ownership_not_proven",
+                        "构建发布要求 Windows Service 已精确归属；首次安装时用户会话程序可以尚未创建，更新时必须已精确归属"),
+                    cancellationToken);
+            }
+            return await AuditAsync(
+                await _buildReleaseService.ExecuteAsync(
+                    request,
+                    project,
+                    source,
+                    cancellationToken),
+                cancellationToken);
+        }
+        if (source is null || sourceKind != "gitFastForward")
         {
             return await AuditAsync(
                 Reject(request, "git_update_not_declared", "项目没有声明 gitFastForward 更新来源"),
+                cancellationToken);
+        }
+        if (project.Components.Any(component =>
+                component.Ownership != ComponentOwnershipStatus.Owned))
+        {
+            return await AuditAsync(
+                Reject(request, "ownership_not_proven", "原地 Git 更新要求全部组件都已精确归属"),
+                cancellationToken);
+        }
+        if (request.Action == GitUpdateAction.Apply &&
+            !ValidCommit(request.ExpectedCurrentCommit ?? string.Empty))
+        {
+            return await AuditAsync(
+                Reject(request, "current_commit_required", "原地 Git 更新必须携带检查阶段返回的当前提交号"),
                 cancellationToken);
         }
 
@@ -848,10 +924,11 @@ public sealed class GitUpdateService
             return "操作标识、项目、环境和 generation 必须完整且在范围内";
         }
         if (request.Action == GitUpdateAction.Apply &&
-            (!ValidCommit(request.ExpectedCurrentCommit ?? string.Empty) ||
-             !ValidCommit(request.ExpectedRemoteCommit ?? string.Empty)))
+            (!ValidCommit(request.ExpectedRemoteCommit ?? string.Empty) ||
+             request.ExpectedCurrentCommit is not null &&
+             !ValidCommit(request.ExpectedCurrentCommit)))
         {
-            return "执行更新必须携带检查阶段返回的完整提交号";
+            return "执行更新必须携带检查阶段返回的完整目标提交号；当前提交号如提供也必须完整有效";
         }
         return null;
     }
@@ -902,6 +979,19 @@ public sealed class GitUpdateService
     private sealed record IdempotentGitUpdate(
         string Fingerprint,
         Lazy<Task<GitUpdateResult>> Execution);
+
+    private sealed class UnsupportedGitBuildReleaseService : IGitBuildReleaseService
+    {
+        public Task<GitUpdateResult> ExecuteAsync(
+            GitUpdateRequest request,
+            ProjectRuntimeView project,
+            JsonObject source,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Reject(
+                request,
+                "git_build_release_unavailable",
+                "当前宿主没有注册 Git Build Release 服务"));
+    }
 
 
     private sealed record GitInspection(

@@ -89,7 +89,11 @@ public sealed record ProjectRuntimeView(
 {
     public string? InstallRoot { get; init; }
 
+    public string? SourceRoot { get; init; }
+
     public bool GitUpdateEnabled { get; init; }
+
+    public string? GitUpdateKind { get; init; }
 
     public bool HasInstalledState { get; init; }
 }
@@ -194,7 +198,12 @@ public sealed record GitUpdateResult(
     IReadOnlyList<string> ChangedFiles,
     IReadOnlyList<string> Steps,
     string? ErrorCode = null,
-    string? Detail = null);
+    string? Detail = null)
+{
+    public string? Version { get; init; }
+
+    public string? ReleaseId { get; init; }
+}
 
 public sealed record GitCredentialSetRequest(
     string OperationId,
@@ -284,7 +293,8 @@ public sealed record ExistingProjectOnboardingRequest(
     IReadOnlyDictionary<string, int>? Ports = null,
     string? DataRoot = null,
     string? LogsRoot = null,
-    string? InteractiveOwnerSid = null);
+    string? InteractiveOwnerSid = null,
+    string? InstallRoot = null);
 
 public enum ExistingProjectOnboardingAction
 {
