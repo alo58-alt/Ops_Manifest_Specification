@@ -12,8 +12,9 @@
 - 发布事务：目标架构/Agent 版本/ProjectManifest 哈希、制品大小/SHA-256、ZIP 路径防护、端口事务、不可变 release；已存在 Windows Service 支持真实 `ImagePath` 切换、依赖启动、健康复核和失败恢复；
 - ASP.NET Core + Vue 3 Console：仅监听 loopback，Windows Negotiate，reader/operator/admin，防 CSRF、安全响应头、高风险确认，以及受控 Plan / Install / Update / Rollback 表单；
 - 通用现有项目接入：从服务器目录选择器选取项目目录，先只读校验 L1 材料和主机资源唯一归属，再原子导入 ProjectManifest / EnvironmentBinding；遗留 PM2 项目可从 owner 发现快照自动核验 name、cwd、script 并生成绑定；不创建 InstalledState、不控制业务服务；
-- 分级运维：L1 观察与健康、L2 精确 Windows Service 启停、L3 声明式 Git 快进或 ReleaseManifest 制品发布；
-- L3 Git 更新默认拒绝脏工作树、分叉、远端不匹配、依赖清单变化和缺少前端构建产物，更新失败恢复原提交并重新启动原服务；
+- 分级运维：L1 观察与健康、L2 精确 Windows Service 启停、L3 原地 Git 快进、跨仓库 Git 构建发布或既有 ReleaseManifest 制品发布；
+- `gitBuildRelease` 把独立业务源码仓库快进到唯一 `v<SemVer>` 标签提交，只调用项目固定的 `tools\Build-CompanyOpsRelease.ps1`，再把生成的 `ReleaseManifest + ZIP` 交给同一部署事务；声明不能携带命令或脚本路径；
+- 两种 L3 Git 更新都拒绝脏工作树、分叉和远端不匹配；原地 `gitFastForward` 还拒绝依赖清单变化和缺少前端构建产物，跨仓库构建失败时保持当前已安装 release 继续运行；
 - 诊断 CLI：查询与结构化 `operate` / `deploy` 请求，按命令设置有上限的等待时间。
 
 `Ops:EnableMutations` 默认为 `false`。仓库测试不会注册、启动、停止或修改本机现有服务、IIS、任务计划或真实 PM2 daemon。
@@ -23,6 +24,7 @@
 ```mermaid
 flowchart LR
   Repo["独立项目仓库\nProjectManifest"] --> CI["CI\nReleaseManifest + ZIP + SHA-256"]
+  Repo -->|"gitBuildRelease\n固定构建约定"| Agent
   CI --> Agent["每主机一个 Ops Agent\nWindows Service"]
   Console["本机 Ops Console\n非特权 + Windows 身份"] -->|"ACL Named Pipe"| Agent
   Agent --> State["Binding / InstalledState\nPort Registry / Audit"]

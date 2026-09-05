@@ -58,10 +58,13 @@
 - 更新失败回滚验证；
 - 数据库、配置和持久数据的兼容或备份方案。
 
-L3 有两条互斥路径：
+L3 有三条互斥路径：
 
 - 小型兼容更新可声明 `update.source.kind=gitFastForward`，CompanyOps 只允许 HTTPS 远端、声明分支、干净工作树和 fast-forward。依赖清单变化、前端源码未同时交付构建产物、本地分支分叉或远端 URL 不符时拒绝；
-- 依赖、迁移、入口或制品布局变化必须由构建/CI 生成 `ReleaseManifest + ZIP + SHA-256`，再走受控发布。
+- 已提供标准发布脚本的独立项目可声明 `update.source.kind=gitBuildRelease` 与 `buildProfile=projectReleaseV1`。接入时分别选择源码目录和安装目录；CompanyOps 快进源码仓库，只接受目标提交上唯一的 `v<SemVer>` 标签，只调用固定的 `tools\Build-CompanyOpsRelease.ps1`，然后把生成的 `ReleaseManifest + ZIP + SHA-256` 送入通用受控发布；
+- 不允许服务器构建或不满足固定约定的项目，由构建/CI 生成 `ReleaseManifest + ZIP + SHA-256`，再手工选择发布目录走受控发布。
+
+`gitBuildRelease` 不在 CompanyOps 仓库内复制业务项目，也不要求两个仓库合并。服务器保留一个独立业务源码 clone；`EnvironmentBinding.roots.source` 绑定该 clone，`roots.install` 绑定不可变 release 根。两个目录必须位于管理员配置的受控项目父目录之下，并且不能相同或互相嵌套。构建环境必须预先装好项目明确需要的 SDK/虚拟环境/前端依赖；Agent 不在发布时临时安装依赖。构建失败时当前业务 release 不停止、不切换。
 
 私有 HTTPS 仓库不得把账号、密码或私人令牌写入 `remoteUrl`、ProjectManifest 或仓库文件。项目接入后，由授权运维者在 Console 的项目卡片点击“仓库凭据”，为声明的精确远端配置一次只读凭据。凭据只保存在 CompanyOps 主机数据目录，由 Agent 使用 Windows DPAPI（LocalMachine）加密，并把文件 ACL 限制为 LocalSystem 和本机管理员；审计只记录配置结果，不记录明文。凭据缺失或被远端拒绝时，更新检查失败关闭，且不会停止业务服务或修改工作树。
 
@@ -71,10 +74,7 @@ L3 有两条互斥路径：
 
 `ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环；IIS、静态站点、计划任务和遗留 PM2 在没有对应现场验收前，不获得 L3 更新权限。
 
-日常操作从 Console“项目与组件”中的“更新项目”进入。操作人员只选择同时包含
-`release-manifest.json` 与发布 ZIP 的目录；Console 自动区分首次 Install 和后续
-Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent
-执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
+日常操作从 Console“项目与组件”中的更新入口进入。`gitBuildRelease` 项目点击“检查更新”读取远端标签和变更，再点击“构建并更新”；不需要 FTP、共享目录、复制 ZIP 或手工解压。其他项目在“更新项目”中选择同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
 
 ## 3. 谁负责生成什么
 
@@ -271,7 +271,7 @@ pwsh -NoProfile -File .\tools\New-ProjectRelease.ps1 `
 
 1. 确认服务器上的项目目录已经包含 `ops\project-manifest.json` 和 `ops\README.md`；
 2. 打开 CompanyOps Console 的“接入现有项目”；
-3. 点击“选择目录…”，在服务器目录选择器中选取项目目录（例如 `D:\project\webquizbot`），再点击“检查项目”；
+3. 点击“选择目录…”，在服务器目录选择器中选取项目源码目录（例如 `D:\CompanyOps\Sources\webquizbot`）；如果声明为 `gitBuildRelease`，再选择独立安装目录（例如 `D:\CompanyOps\Projects\webquizbot`），然后点击“检查项目”；
 4. 检查结果必须唯一匹配原生资源，并证明 Windows Service/IIS 入口位于项目目录内；PM2 项目还必须显示同一个 owner 下每个组件的精确 name、pm_id、cwd、script；
 5. 点击“确认只读接入”；CompanyOps 原子导入 ProjectManifest，并为当前主机生成 EnvironmentBinding；已接入项目无需重复接入，声明变化时从项目卡点击“同步声明”，系统会自动回显原生资源名称和当前绑定端口；
 6. 下方出现正确的 `项目 ID / 环境 / 组件`；L1 显示 `Declared / DeclaredOnly` 是正常结果；

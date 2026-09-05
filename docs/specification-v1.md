@@ -43,7 +43,12 @@ ProjectManifest 包含：
 `interactiveApp` 必须声明项目内相对 `.exe`、相对工作目录、`manual|userLogon` 启动策略和可选的参数数组。主机 `EnvironmentBinding.interactiveSession` 单独绑定 owner SID、缩减快照和控制管道；这些主机事实不得提交回项目仓库。
 `interactiveApp` 的健康声明至少包含一个 `interactiveProcess`，它由当前用户 Session Agent 的唯一进程快照支持，不依赖 Session 0 中的进程猜测。
 
-`update.source` 是可选的 L3 Git 快进声明。声明后必须固定 `kind=gitFastForward`、远端名称、分支和无凭据 HTTPS URL；它只授权 Agent 读取和快进该精确来源，不授权任意 shell、分支切换、强制覆盖或清理未跟踪文件。`rollbackOnFailure` 必须为 `true` 才能执行 Git 更新。
+`update.source` 是可选的 L3 Git 来源声明。两种 kind 都必须固定远端名称、分支和无凭据 HTTPS URL，只授权 Agent 读取和快进该精确来源，不授权分支切换、强制覆盖或清理未跟踪文件；`rollbackOnFailure` 必须为 `true`。
+
+- `gitFastForward`：安装目录本身是 Git 工作树，仅适用于不改变依赖和构建产物的兼容更新；不得声明 `buildProfile`。
+- `gitBuildRelease`：`EnvironmentBinding.roots.source` 指向独立源码工作树，`roots.install` 指向不可变 release 安装根；两者不能相同或互相包含。必须声明固定的 `buildProfile=projectReleaseV1`。目标提交必须且只能有一个 `v<major>.<minor>.<patch>[-prerelease]` 标签；Agent 只调用源码根下固定文件名 `tools\Build-CompanyOpsRelease.ps1`，并只向它传版本、ReleaseId、目标提交和 Agent 分配的输出目录。项目声明不能提供命令、参数或脚本路径。
+
+`gitBuildRelease` 生成的 ReleaseManifest 必须绑定目标 projectId、标签版本、ReleaseId 和 sourceRevision，随后仍由通用 Plan/Install/Update 校验 ProjectManifest 哈希、ZIP 大小与 SHA-256、组件归属和健康。构建或校验失败不会切换当前 release；源码快进不会被伪装成业务回滚。
 
 ## 4. ReleaseManifest
 
@@ -63,7 +68,7 @@ pm2 jlist。快照只能包含归属判定需要的有限字段，不能复制�
 
 EnvironmentBinding 只保存非敏感绑定：主机 ID、环境名、安装/数据/日志根目录、服务账户引用、端口分配、路由和配置值。敏感配置只能使用 `secretRef`，禁止同时出现明文 `value`。
 
-实际路径必须是绝对 Windows 路径。正式 Agent 还必须进一步验证路径位于管理员允许的根目录下；Schema 只完成格式层约束，不能替代 ACL 和规范化路径校验。
+实际路径必须是绝对 Windows 路径。`roots.source` 只用于 `gitBuildRelease` 的独立源码工作树。正式 Agent 还必须进一步验证源码与安装路径位于管理员允许的项目父目录下，且源码/安装根彼此独立；Schema 只完成格式层约束，不能替代 ACL 和规范化路径校验。
 
 ## 6. InstalledState
 

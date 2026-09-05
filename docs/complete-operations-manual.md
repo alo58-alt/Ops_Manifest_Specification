@@ -1014,9 +1014,18 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 
 已接入项目平时不需要再次执行首次接入。如果项目卡片仍显示旧组件数量，而本次受审版本新增了组件，先把服务器项目目录快进到包含新 `ops\project-manifest.json` 的提交，再在该项目卡片点击“同步声明”。Console 自动使用原项目目录、环境、原生资源名称和当前绑定端口做只读预检；确认后只刷新声明。该同步只允许新增组件并保留原根目录、原组件 kind 和原生绑定；不会启停业务服务。任何删除、改绑或类型变化必须走单独迁移，不得用声明同步绕过。
 
-保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。
+保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。使用 `gitBuildRelease` 时，`roots.source` 也必须位于该受控父目录下，并与 `roots.install` 彼此独立；可用一个共同父目录（例如 `D:\CompanyOps`）容纳 `Sources` 和 `Projects` 两棵子目录。
 
 ### 11.1 Console 图形页面（普通运维优先）
+
+项目声明为 `gitBuildRelease` 时：
+
+1. 服务器源码 clone 必须在声明分支、工作树干净，远端 URL 与声明一致；目标提交必须有且只有一个 `v<major>.<minor>.<patch>[-prerelease]` 标签；
+2. 在“项目与组件”点击“检查更新”，核对目标标签、提交号和变更文件；私有 HTTPS 仓库先配置精确远端的只读凭据；
+3. 确认后点击“构建并更新”。Agent 快进源码，调用固定项目发布脚本，把产物放入 Agent 状态目录，再执行通用 Plan 和 Install/Update；
+4. 构建、Manifest 校验或部署失败时查看步骤与审计。构建阶段不会停止当前 release，部署阶段失败按既有事务恢复旧入口。
+
+项目没有声明 `gitBuildRelease` 时：
 
 1. 在“项目与组件”找到目标项目，点击“更新项目”；
 2. 在“项目更新”点击“选择目录…”，从服务器目录选择器选取发布包目录。该目录必须同时包含 `release-manifest.json` 和清单引用的发布 ZIP；首页不接受手工输入服务器路径；
