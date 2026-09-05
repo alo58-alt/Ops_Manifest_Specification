@@ -8,7 +8,8 @@ type ComponentView = {
 }
 type ProjectView = {
   projectId: string; displayName: string; environment: string; status: string;
-  installedVersion?: string; generation?: number; installRoot?: string; gitUpdateEnabled: boolean; hasInstalledState: boolean;
+  installedVersion?: string; generation?: number; installRoot?: string; sourceRoot?: string;
+  gitUpdateEnabled: boolean; gitUpdateKind?: 'gitFastForward' | 'gitBuildRelease'; hasInstalledState: boolean;
   components: ComponentView[]; problems: string[]
 }
 type SecurityContext = { user: string; role: 'reader' | 'operator' | 'admin'; csrfToken: string }
@@ -47,11 +48,11 @@ type DirectoryBrowseResult = {
   currentPath?: string; parentPath?: string; isProjectRoot: boolean;
   isReleaseDirectory: boolean; directories: DirectoryBrowseEntry[]
 }
-type DirectoryBrowserPurpose = 'project' | 'release'
+type DirectoryBrowserPurpose = 'project' | 'install' | 'release'
 type GitUpdateResult = {
   operationId: string; action: 'Check' | 'Apply'; outcome: string; projectId: string; environment: string;
   updateAvailable: boolean; canApply: boolean; currentCommit?: string; remoteCommit?: string;
-  changedFiles: string[]; steps: string[]; errorCode?: string; detail?: string
+  changedFiles: string[]; steps: string[]; version?: string; releaseId?: string; errorCode?: string; detail?: string
 }
 type GitCredentialSetResult = {
   operationId: string; outcome: string; projectId: string; environment: string;
@@ -71,6 +72,7 @@ const artifactDirectory = ref('')
 const deploymentIdentity = ref(createDeploymentIdentity())
 const deploymentResult = ref<DeploymentResult | null>(null)
 const onboardingProjectRoot = ref('')
+const onboardingInstallRoot = ref('')
 const onboardingEnvironment = ref('production')
 const onboardingResult = ref<OnboardingResult | null>(null)
 const onboardingNativeNames = ref<Record<string, string>>({})
@@ -99,14 +101,16 @@ const releaseManifestPath = computed(() => {
   return directory ? `${directory}\\release-manifest.json` : ''
 })
 const directoryBrowserTitle = computed(() => directoryBrowserPurpose.value === 'project'
-  ? '选择服务器项目目录'
-  : '选择服务器发布包目录')
+  ? '选择服务器项目源码目录'
+  : directoryBrowserPurpose.value === 'install'
+    ? '选择 CompanyOps 托管安装目录'
+    : '选择服务器发布包目录')
 const directoryBrowserCanSelect = computed(() => {
   const result = directoryBrowserResult.value
   if (!result?.currentPath) return false
   return directoryBrowserPurpose.value === 'project'
     ? result.isProjectRoot
-    : result.isReleaseDirectory
+    : directoryBrowserPurpose.value === 'install' || result.isReleaseDirectory
 })
 const directoryBrowserStatus = computed(() => {
   if (!directoryBrowserResult.value?.currentPath) return '请先选择服务器磁盘'
@@ -115,16 +119,19 @@ const directoryBrowserStatus = computed(() => {
       ? '已检测到 ops\\project-manifest.json'
       : '当前目录不是可接入项目'
   }
+  if (directoryBrowserPurpose.value === 'install') return '将作为不可变 releases 的安装根目录'
   return directoryBrowserResult.value.isReleaseDirectory
     ? '已检测到 release-manifest.json'
     : '当前目录不是有效发布包目录'
 })
 const directoryBrowserSelectLabel = computed(() => directoryBrowserPurpose.value === 'project'
   ? '选择此项目'
-  : '选择此发布包')
+  : directoryBrowserPurpose.value === 'install'
+    ? '选择此安装目录'
+    : '选择此发布包')
 const onboardingExistingProject = computed(() => projects.value.find(project =>
-  !!project.installRoot &&
-  sameHostPath(project.installRoot, onboardingProjectRoot.value) &&
+  !!(project.sourceRoot || project.installRoot) &&
+  sameHostPath(project.sourceRoot || project.installRoot || '', onboardingProjectRoot.value) &&
   project.environment.toLowerCase() === onboardingEnvironment.value.trim().toLowerCase()) ?? null)
 const onboardingTitle = computed(() => onboardingExistingProject.value
   ? `同步 ${onboardingExistingProject.value.displayName} 声明`
@@ -274,6 +281,7 @@ function onboardingRequest(action: 'Plan' | 'Apply') {
     Object.entries(onboardingPorts.value).filter(([, value]) => Number.isInteger(value) && value > 0 && value <= 65535))
   return {
     projectRoot: onboardingProjectRoot.value.trim(),
+    installRoot: onboardingInstallRoot.value.trim() || undefined,
     environment: onboardingEnvironment.value.trim() || 'production',
     action,
     expectedPlanToken: action === 'Apply' ? onboardingResult.value?.planToken : undefined,
@@ -361,8 +369,12 @@ function chooseDirectory() {
   if (!result?.currentPath || !directoryBrowserCanSelect.value) return
   if (directoryBrowserPurpose.value === 'project') {
     onboardingProjectRoot.value = result.currentPath
+    onboardingInstallRoot.value = ''
     onboardingNativeNames.value = {}
     onboardingPorts.value = {}
+    resetOnboardingPlan()
+  } else if (directoryBrowserPurpose.value === 'install') {
+    onboardingInstallRoot.value = result.currentPath
     resetOnboardingPlan()
   } else {
     artifactDirectory.value = result.currentPath
@@ -397,11 +409,12 @@ function resetOnboardingPlan() {
 }
 
 async function prepareOnboardingRefresh(project: ProjectView) {
-  if (!project.installRoot) {
-    error.value = `${project.displayName} 没有可用的服务器项目目录，无法同步声明。`
+  if (!project.sourceRoot && !project.installRoot) {
+    error.value = `${project.displayName} 没有可用的服务器项目源码目录，无法同步声明。`
     return
   }
-  onboardingProjectRoot.value = project.installRoot
+  onboardingProjectRoot.value = project.sourceRoot || project.installRoot || ''
+  onboardingInstallRoot.value = project.installRoot || ''
   onboardingEnvironment.value = project.environment
   onboardingNativeNames.value = {}
   onboardingPorts.value = {}
@@ -457,8 +470,13 @@ async function gitUpdate(project: ProjectView, action: 'Check' | 'Apply') {
       project.generation == null || !security.value || activeOperation.value) return
   const previous = gitUpdateResults.value[projectKey(project)]
   if (action === 'Apply') {
-    if (!previous?.canApply || !previous.currentCommit || !previous.remoteCommit) return
-    if (!confirm(`确认把 ${project.displayName} 从 ${previous.currentCommit.slice(0, 12)} 更新到 ${previous.remoteCommit.slice(0, 12)}？\nCompanyOps 会停止精确 Windows 服务、快进代码、启动并做健康检查；失败时恢复原提交。`)) return
+    if (!previous?.canApply || !previous.remoteCommit ||
+        (project.gitUpdateKind !== 'gitBuildRelease' && !previous.currentCommit)) return
+    const from = previous.currentCommit?.slice(0, 12) || '未安装'
+    const actionDetail = project.gitUpdateKind === 'gitBuildRelease'
+      ? `CompanyOps 会先快进独立源码仓库并构建 ${previous.version || '目标版本'}，构建成功后才切换不可变 Release；失败时保留当前运行版本。`
+      : 'CompanyOps 会停止精确 Windows 服务、快进代码、启动并做健康检查；失败时恢复原提交。'
+    if (!confirm(`确认把 ${project.displayName} 从 ${from} 更新到 ${previous.remoteCommit.slice(0, 12)}？\n${actionDetail}`)) return
   }
 
   const now = Date.now()
@@ -620,8 +638,14 @@ onMounted(refresh)
       <form class="onboarding-form" @submit.prevent="planOnboarding">
         <label class="onboarding-path">服务器上的项目目录
           <span class="directory-field">
-            <input v-model="onboardingProjectRoot" readonly placeholder="点击右侧按钮选择服务器项目目录">
+            <input v-model="onboardingProjectRoot" readonly placeholder="点击右侧按钮选择服务器项目源码目录">
             <button type="button" class="secondary" @click="openDirectoryBrowser('project', onboardingProjectRoot || undefined)">选择目录…</button>
+          </span>
+        </label>
+        <label class="onboarding-path">托管安装目录
+          <span class="directory-field">
+            <input v-model="onboardingInstallRoot" readonly placeholder="gitBuildRelease 必须选择独立、非嵌套目录">
+            <button type="button" class="secondary" @click="openDirectoryBrowser('install', onboardingInstallRoot || undefined)">选择目录…</button>
           </span>
         </label>
         <label>环境标识
@@ -743,15 +767,21 @@ onMounted(refresh)
           <p v-for="problem in project.problems" :key="problem" class="problem">{{ problem }}</p>
           <div v-if="project.gitUpdateEnabled" class="git-update">
             <div>
-              <strong>L3 · Git 受控更新</strong>
+              <strong>{{ project.gitUpdateKind === 'gitBuildRelease' ? 'L3 · Git 构建发布' : 'L3 · Git 受控更新' }}</strong>
               <small v-if="gitUpdateResults[projectKey(project)]">
                 {{ gitUpdateResults[projectKey(project)].detail }}
                 <template v-if="gitUpdateResults[projectKey(project)].currentCommit"> · {{ gitUpdateResults[projectKey(project)].currentCommit?.slice(0, 12) }}</template>
                 <template v-if="gitUpdateResults[projectKey(project)].remoteCommit && gitUpdateResults[projectKey(project)].remoteCommit !== gitUpdateResults[projectKey(project)].currentCommit"> → {{ gitUpdateResults[projectKey(project)].remoteCommit?.slice(0, 12) }}</template>
               </small>
+              <small v-else-if="project.gitUpdateKind === 'gitBuildRelease'">从独立项目仓库 fast-forward，按唯一版本标签构建完整 Release，再执行校验、切换和回滚。</small>
               <small v-else>只允许声明远端、干净工作树和 fast-forward；依赖变化转受控制品发布。</small>
               <details v-if="gitUpdateResults[projectKey(project)]" class="operation-details">
                 <summary>查看本次操作详情</summary>
+                <div v-if="gitUpdateResults[projectKey(project)].version" class="commit-flow">
+                  <code>v{{ gitUpdateResults[projectKey(project)].version }}</code>
+                  <span>·</span>
+                  <code>{{ gitUpdateResults[projectKey(project)].releaseId }}</code>
+                </div>
                 <div class="commit-flow" v-if="gitUpdateResults[projectKey(project)].currentCommit">
                   <code>{{ gitUpdateResults[projectKey(project)].currentCommit }}</code>
                   <span>→</span>
@@ -772,7 +802,7 @@ onMounted(refresh)
                 仓库凭据
               </button>
               <button :disabled="!canOperate || !gitUpdatesEnabled || !gitUpdateResults[projectKey(project)]?.canApply || !!activeOperation" @click="gitUpdate(project, 'Apply')">
-                {{ activeOperation === `git/${projectKey(project)}/Apply` ? '更新中…' : '安全更新' }}
+                {{ activeOperation === `git/${projectKey(project)}/Apply` ? '更新中…' : project.gitUpdateKind === 'gitBuildRelease' ? '构建并更新' : '安全更新' }}
               </button>
             </div>
           </div>
