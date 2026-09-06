@@ -128,7 +128,13 @@ pwsh -NoProfile -File .\tools\Test-ProjectReleaseRehearsal.ps1 `
 - Windows `core.autocrlf` 会改变构建输入或产物字节。项目用 `.gitattributes` 固定前端源码 LF，并让受跟踪 `dist` 不作文本换行转换；发布一致性需要验证 checkout 后的实际字节。
 - 故障注入重现了“旧版入口已恢复，但旧端口登记被删除”的缺陷。CompanyOps 已修复：更新预留保留同一归属的 active 登记，失败仅释放本次新 reserved 记录；另一操作也不能劫持同一归属的未完成预留。回滚验收应同时查入口、pointer、InstalledState、端口和审计。
 
-本轮未执行真实 SCM / 登录会话切换、生产数据库备份恢复、Agent 崩溃恢复或外部业务验收；隔离演练和构建通过不提升为生产验收通过。
+以上为先期隔离演练，仅证明声明和部署事务的受控路径。
+
+同日随后完成了正式服务器升级：平台在开发机通过 142 项自动测试及 18 项契约检查后，以预编译包通过 SSH 升级到运行组件提交 `97e191209bdd53b69ac228f4cdeb4e308bc94e22`；安装器的预检和升级结果分别为 `Planned`、`Upgraded`，Agent、Console、SessionAgent 三份主机配置的 SHA-256 在升级前后完全一致。服务器没有参与构建。后续启动脚本的 Windows PowerShell 5.1 退出码修复、发布索引原子替换修复分别经过专项检查。
+
+WebQuizBot 正式包 `3.0.6` 绑定源码 `640a3ab83122a0012746a2bd5102ebc31b0b1f1e`，ZIP 大小为 96,127,116 字节，SHA-256 为 `02901f152df478cc6794299919c72edd6a237fefe873df3d7c5e087d4744a33f`。传送后由真实 Agent 完成 Plan / Update，从 `3.0.3` 升至 `3.0.6`，generation 从 4 变为 5。NSSM API 入口与登录用户会话内的 BrowserHost 入口均切换到新 release，组件归属、HTTP 探针、精确进程、文件心跳及 `/api/status` 业务状态读取通过，调度器恢复运行。安装、数据和日志根保持原值；新包的 ProjectManifest 哈希恰好与现有声明一致，因此没有重写绑定或搬迁目录。
+
+现场操作前使用 SQLite 在线备份 API 备份了业务库和 Ops 状态库，两份备份均通过 `quick_check`；保留配置备份、旧 `3.0.3` release 和 previous pointer。成功升级的现场结果不代替故障注入：本次未在生产故意破坏制品或健康探针，也没有执行数据库恢复、Agent 崩溃恢复、真实账号答题或外部通知验收。可复用顺序是：固定源码与标签 → 开发机验证并构建 → 自动传包与复核 → 数据备份 → 精确 Plan → Update → 状态、原生入口和健康复核。
 
 ## 3. 谁负责生成什么
 
