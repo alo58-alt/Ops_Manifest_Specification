@@ -209,7 +209,8 @@ public sealed class DeploymentEngine(
             await ValidatePayloadsAsync(request.ReleaseManifestPath, stagingPath, cancellationToken);
             steps.Add("ZIP 安全解包与 componentPayload 路径校验通过");
             Directory.CreateDirectory(Path.GetDirectoryName(context.ReleasePath)!);
-            Directory.Move(stagingPath, context.ReleasePath);
+            await ReleaseDirectoryMover.MoveAsync(stagingPath, context.ReleasePath, cancellationToken,
+                () => steps.Add("release 目录暂时不可移动，正在有限重试（最多等待 5 秒），尚未切换原生入口"));
             var metadataDirectory = Path.Combine(context.ReleasePath, ".companyops");
             Directory.CreateDirectory(metadataDirectory);
             File.Copy(
@@ -724,12 +725,12 @@ public sealed class DeploymentEngine(
         File.Move(temporary, pointerPath, overwrite: true);
     }
 
-    private static Task QuarantineFailedReleaseAsync(DeploymentContext context, string operationId)
+    private static async Task QuarantineFailedReleaseAsync(DeploymentContext context, string operationId)
     {
         var source = Directory.Exists(context.ReleasePath) ? context.ReleasePath : context.StagingPath;
         if (!Directory.Exists(source))
         {
-            return Task.CompletedTask;
+            return;
         }
 
         var failedRoot = Path.Combine(context.InstallRoot, ".failed");
@@ -737,10 +738,8 @@ public sealed class DeploymentEngine(
         var destination = Path.Combine(failedRoot, operationId);
         if (!Directory.Exists(destination))
         {
-            Directory.Move(source, destination);
+            await ReleaseDirectoryMover.MoveAsync(source, destination, CancellationToken.None);
         }
-
-        return Task.CompletedTask;
     }
 
     private async Task AuditAsync(DeploymentResult result, CancellationToken cancellationToken)

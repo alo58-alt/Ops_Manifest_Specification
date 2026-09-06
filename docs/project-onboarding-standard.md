@@ -78,6 +78,8 @@ L3 有三条互斥路径：
 
 日常操作从 Console“项目与组件”中的更新入口进入。`gitBuildRelease` 项目点击“检查更新”读取远端标签和变更，再点击“构建并更新”；不需要 FTP、共享目录、复制 ZIP 或手工解压。其他项目在“更新项目”中选择同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
 
+Windows 上解包后的 release 目录可能暂时不可移动。Agent 对同一 staging→release 原子重命名及失败目录隔离，仅在 Windows 访问拒绝、共享冲突或锁冲突且源目录仍存在、目标不存在时重试，累计等待不超过 5 秒；等待支持取消，不覆盖目标、不结束占用进程。持续失败仍进入原有状态恢复与端口预留释放流程，原生入口不会在 staging 移动成功前切换。验证使用临时目录中的真实 Windows 文件锁，覆盖释放后成功、持续占用、取消和目标已存在。
+
 ### 2.4 Git 构建发布的项目复用流程
 
 本节是项目开发者落实 `gitBuildRelease` 的通用入口。发布人员的 Console 操作见[完整操作手册 11.1](complete-operations-manual.md#111-console-图形页面普通运维优先)。新项目复用同一契约和发布事务，不复制 WebQuizBot 的端口、原生服务名称、浏览器依赖或业务数据。
