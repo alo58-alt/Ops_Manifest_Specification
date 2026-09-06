@@ -32,6 +32,13 @@ try {
     [IO.File]::Copy($AssemblyPath, (Join-Path $sourceFixture 'Setup\CompanyOps-Setup.dll'))
     [IO.File]::WriteAllText((Join-Path $sourceFixture 'Setup\CompanyOps-Setup.exe'), 'INERT: never execute this fixture')
     [IO.File]::WriteAllText((Join-Path $sourceFixture 'Payload.sha256.json'), '{"Version":1,"Files":[]}')
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        . $PublisherPath -PackageRoot $sourceFixture -FeedRoot $feedFixture
+        $atomicFixture = Join-Path $fixtureRoot 'mutable-selector.json'
+        Write-CompanyOpsAtomicFile $atomicFixture 'old-selector'
+        Write-CompanyOpsAtomicFile $atomicFixture 'new-selector'
+        Assert-PrebuiltTest ([IO.File]::ReadAllText($atomicFixture) -eq 'new-selector') 'Atomic replacement of an existing selector failed'
+    }
     $publication = & pwsh.exe -NoProfile -File $PublisherPath -PackageRoot $sourceFixture -FeedRoot $feedFixture 2>&1
     Assert-PrebuiltTest ($LASTEXITCODE -eq 0) ("Publisher failed: " + ($publication | Out-String))
     $package = Read-CompanyOpsPrebuiltPackage $feedFixture
