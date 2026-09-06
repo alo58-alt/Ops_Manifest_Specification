@@ -1,12 +1,12 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
-title 生成 CompanyOps 安装包
+title CompanyOps Package Build
 
 where pwsh.exe >nul 2>nul
 if errorlevel 1 (
-  echo [失败] 构建电脑缺少 PowerShell 7 ^(pwsh.exe^)。
-  echo 请安装 PowerShell 7 后重新双击本文件。
+  echo [ERROR] PowerShell 7 ^(pwsh.exe^) is required.
+  echo Install PowerShell 7 and reopen this window.
   pause
   exit /b 1
 )
@@ -14,13 +14,13 @@ if errorlevel 1 (
 pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\Build-CompanyOpsSetup.ps1"
 if errorlevel 1 (
   echo.
-  echo [失败] 没有生成安装包，请查看上方第一条红色错误。
+  echo [ERROR] Package build failed. See the first error above.
   pause
   exit /b 1
 )
 
 echo.
-echo [完成] 安装包位于：%~dp0output\CompanyOps-Offline-win-x64.zip
+echo [DONE] Package: "%~dp0output\CompanyOps-Offline-win-x64.zip"
 start "" explorer.exe /select,"%~dp0output\CompanyOps-Offline-win-x64.zip"
 pause
 exit /b 0

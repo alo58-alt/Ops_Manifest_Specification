@@ -12,6 +12,8 @@
 
 .NET SDK 最低为 `10.0.302`，优先使用 `10.0.3xx` 的最新补丁；缺少该功能版本时，允许同一 `10.0` 系列的更高稳定功能版本，例如 `10.0.400`。不会自动采用 `10.1`、`11.0` 或预览版。安装新工具后应重新打开终端，让 PATH 生效；SDK 不匹配应检查 `dotnet --list-sdks` 和 `global.json`，重启服务器不能解决版本选择限制。
 
+如果旧版 CMD 入口出现乱码或将 `ile`、`not` 等命令片段报告为“不是内部或外部命令”，在服务器的 Ops 源码目录直接运行 `pwsh -NoProfile -File .\tools\Update-CompanyOps.ps1`。更新器会拉取修复后的入口；后续仍使用 `更新CompanyOps.cmd`。两个根目录 CMD 入口使用 ASCII 文本，Git 通过 `.gitattributes` 强制 CMD/BAT 签出为 Windows CRLF 换行；中文提示由 PowerShell 输出。
+
 相同已安装提交会直接结束，不构建、不重启；脏工作树、分支分叉、已知版本降级、构建失败或校验失败均拒绝升级。
 
 日志位于源码目录 `artifacts\platform-updates`。工程验证可运行 `pwsh -NoProfile -File .\tools\Update-CompanyOps.ps1 -CheckOnly`（获取远端并检查，不改工作树、不构建、不启动安装器）或 `-PrepareOnly`（完成拉取、构建及校验，不启动安装器）。安装器的 `--upgrade-only` 模式拒绝首次安装，取消或失败不会向更新器返回成功；一台主机上的安装和升级通过同一操作门禁互斥。
@@ -26,7 +28,7 @@ WebQuizBot 等业务项目仍在 Console 点击“检查更新 → 构建并更�
 生成CompanyOps安装包.cmd
 ```
 
-等待窗口显示“完成”。程序会自动打开生成文件所在目录。
+等待窗口显示 `[DONE]`。程序会自动打开生成文件所在目录。
 
 ## 第二步：复制并解压一个 ZIP
 
