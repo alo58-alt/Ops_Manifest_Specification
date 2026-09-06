@@ -98,6 +98,8 @@ pwsh -NoProfile -File .\tools\Test-ProjectReleaseRehearsal.ps1 `
 
 此工具只支持当前具有激活实现的 `windowsService` / `interactiveApp` 组合。输入声明和制品只读；它在 `artifacts/release-rehearsals/<运行 ID>` 建立临时主机绑定、安装目录、持久数据哨兵与隔离 SQLite，不连接 Agent、不注册服务、不启动发布包中的 EXE、不访问业务端口。生产部署引擎、原生激活编排、ZIP 解包、Schema、SHA-256、pointer、InstalledState、端口登记和审计使用真实实现，原生控制与健康探针使用假适配器。
 
+服务器默认构建宿主是 Windows PowerShell 5.1。随 Agent 发布的 `New-ProjectRelease.ps1` 按需加载 ZIP 程序集，以流式 SHA-256 计算哈希，并调用同目录的自包含 `CompanyOps.Agent.exe --validate-release <Manifest> <ArtifactDirectory>` 校验 Schema、制品哈希和大小。该入口在创建 Host 之前返回，不启动服务、盘点或写入 Agent 状态；服务器不需要为校验额外安装 PowerShell 7 或 .NET SDK。规范源码目录仍使用 `Test-OpsManifest.ps1` 和开发机 PowerShell 7。发布前必须验证实际安装包布局，不能只在源码工具目录构建通过。
+
 默认从候选包的**同一载荷**衍生 `0.0.0-rehearsal.baseline`，因此证明的是部署事务，不证明两个业务版本之间的数据兼容。可通过 `-BaselineReleaseManifestPath` 传入另一个真实基线包（须匹配同一 ProjectManifest 契约），通过 `-OutputDirectory` 指定不存在的输出目录。报告 `rehearsal-result.json` 显式记录是否衍生基线；每次演练覆盖：
 
 | 检查 | 通过标准 |

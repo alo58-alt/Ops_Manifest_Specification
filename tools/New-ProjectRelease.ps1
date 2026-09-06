@@ -41,6 +41,17 @@ function Resolve-RequiredDirectory([string]$Path, [string]$Label) {
     return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
 }
 
+function Get-Sha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Resolve-PayloadPath([string]$Root, [string]$RelativePath, [string]$Label) {
     if ([string]::IsNullOrWhiteSpace($RelativePath) -or
         [System.IO.Path]::IsPathRooted($RelativePath) -or
@@ -113,11 +124,9 @@ foreach ($payload in @($recipe.componentPayloads)) {
             throw "组件 $componentId 工作目录不存在：$workingDirectory"
         }
     }
-    $argumentValues = if ($payload.PSObject.Properties.Name -contains 'arguments') {
-        @($payload.arguments | ForEach-Object { [string]$_ })
-    } else {
-        @()
-    }
+    $argumentValues = @(if ($payload.PSObject.Properties.Name -contains 'arguments') {
+        $payload.arguments | ForEach-Object { [string]$_ }
+    })
     $componentPayload = [ordered]@{
         componentId = $componentId
         entrypoint = $entrypoint
@@ -143,6 +152,9 @@ if (Test-Path -LiteralPath $outputDirectory) {
 }
 
 $artifactPath = Join-Path $outputDirectory $artifactFileName
+if (-not ('System.IO.Compression.ZipFile' -as [type])) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+}
 [System.IO.Compression.ZipFile]::CreateFromDirectory(
     $payloadDirectory,
     $artifactPath,
@@ -152,8 +164,8 @@ if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
     throw "ZIP 制品生成失败：$artifactPath"
 }
 $artifact = Get-Item -LiteralPath $artifactPath
-$artifactHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$projectHash = (Get-FileHash -LiteralPath $projectManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$artifactHash = Get-Sha256 $artifactPath
+$projectHash = Get-Sha256 $projectManifestPath
 
 $metadata = [ordered]@{
     projectId = $projectId
@@ -192,7 +204,21 @@ $json = $releaseManifest | ConvertTo-Json -Depth 20
     [System.Text.UTF8Encoding]::new($false))
 
 $validator = Join-Path $PSScriptRoot 'Test-OpsManifest.ps1'
-& $validator $releaseManifestPath
+$agentValidator = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\CompanyOps.Agent.exe'))
+if (Test-Path -LiteralPath $agentValidator -PathType Leaf) {
+    # The installed package uses its self-contained validator; no PowerShell 7 or SDK is needed.
+    & $agentValidator --validate-release $releaseManifestPath $outputDirectory
+} elseif (Test-Path -LiteralPath $validator -PathType Leaf) {
+    if (Get-Command Test-Json -ErrorAction SilentlyContinue) {
+        & $validator $releaseManifestPath
+    } else {
+        # Source-tree validation uses Test-Json, available in the developer's PowerShell 7.
+        $pwshCommand = Get-Command pwsh.exe -ErrorAction Stop
+        & $pwshCommand.Source -NoLogo -NoProfile -NonInteractive -File $validator $releaseManifestPath
+    }
+} else {
+    throw '缺少发布校验器：需要完整 CompanyOps Agent 安装包或规范源码工具目录。'
+}
 if ($LASTEXITCODE -ne 0) {
     throw "生成后的 ReleaseManifest 校验失败：$releaseManifestPath"
 }

@@ -10,6 +10,14 @@ using CompanyOps.Agent.Onboarding;
 using CompanyOps.Agent.Updates;
 using CompanyOps.Contracts;
 
+// This mode must return before creating a Host, inventory worker, state store or service.
+if (ReleaseValidationCommand.IsRequested(args))
+{
+    using var validationTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    Environment.ExitCode = await ReleaseValidationCommand.RunAsync(args, validationTimeout.Token);
+    return;
+}
+
 if (GitCredentialAskPass.IsRequested())
 {
     Environment.ExitCode = GitCredentialAskPass.Run(args);

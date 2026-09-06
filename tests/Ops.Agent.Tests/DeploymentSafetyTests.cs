@@ -30,6 +30,23 @@ public sealed class DeploymentSafetyTests
     }
 
     [Fact]
+    public async Task ReleaseValidationCommand_ValidatesPackageAndRejectsCorruptionWithoutStartingAgent()
+    {
+        using var directory = new TestDirectory();
+        var zipPath = Path.Combine(directory.FullPath, "package.zip");
+        await CreateZipAsync(zipPath, "app/service.txt", "payload");
+        var manifest = await WriteReleaseManifestAsync(directory.FullPath, zipPath);
+        var arguments = new[] { "--validate-release", manifest, directory.FullPath };
+
+        Assert.True(ReleaseValidationCommand.IsRequested(arguments));
+        Assert.Equal(0, await ReleaseValidationCommand.RunAsync(arguments, TestContext.Current.CancellationToken));
+        await File.AppendAllTextAsync(zipPath, "corrupt", TestContext.Current.CancellationToken);
+        Assert.Equal(1, await ReleaseValidationCommand.RunAsync(arguments, TestContext.Current.CancellationToken));
+        Assert.Equal(2, await ReleaseValidationCommand.RunAsync(["--validate-release"], TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.GetFiles(directory.FullPath, "*.db", SearchOption.AllDirectories));
+    }
+
+    [Fact]
     public async Task ZipPathTraversal_IsRejectedWithoutWritingOutsideDestination()
     {
         using var directory = new TestDirectory();
