@@ -108,7 +108,8 @@ internal sealed class InstallerEngine
         string dataInput,
         bool enableControlledUpdates,
         string allowedProjectRootsInput,
-        IProgress<string> progress)
+        IProgress<string> progress,
+        bool requireExistingInstallation = false)
     {
         var installRoot = ValidateLocalDirectory(installInput, "程序目录");
         var dataRoot = ValidateLocalDirectory(dataInput, "数据目录");
@@ -117,7 +118,9 @@ internal sealed class InstallerEngine
             allowedProjectRootsInput);
         ValidateIndependentRoots(installRoot, dataRoot);
         EnsureAdministrator();
+        using var setupLease = PlatformSetupLease.Acquire();
         var existing = DetectExistingInstallation();
+        RequireExistingInstallation(existing, requireExistingInstallation);
         if (existing is not null)
         {
             if (!string.Equals(existing.InstallRoot, installRoot, StringComparison.OrdinalIgnoreCase) ||
@@ -135,6 +138,14 @@ internal sealed class InstallerEngine
             enableControlledUpdates,
             allowedProjectInstallRoots,
             progress);
+    }
+
+    internal static void RequireExistingInstallation(ExistingInstallation? existing, bool required)
+    {
+        if (required && existing is null)
+        {
+            throw new InvalidOperationException("现有 CompanyOps 安装已不存在，拒绝把升级操作转换为首次安装。");
+        }
     }
 
     private InstallResult InstallFirstTime(

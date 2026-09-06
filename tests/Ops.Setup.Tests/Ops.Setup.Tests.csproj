@@ -17,4 +17,8 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\Test-CompanyOpsUpdate.ps1" Link="Test-CompanyOpsUpdate.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\Update-CompanyOps.ps1" Link="Update-CompanyOps.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

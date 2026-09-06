@@ -20,6 +20,13 @@ internal static class Program
             }
         }
 
+        var upgradeOnly = args.Length == 1 && args[0] == "--upgrade-only";
+        if (args.Length != 0 && !upgradeOnly)
+        {
+            Console.Error.WriteLine("只支持 --verify-payload [目录] 或 --upgrade-only。");
+            return 2;
+        }
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -29,7 +36,8 @@ internal static class Program
                 "CompanyOps 安装失败",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
-        Application.Run(new InstallerForm());
-        return 0;
+        using var form = new InstallerForm(upgradeOnly);
+        Application.Run(form);
+        return form.ExitCode;
     }
 }

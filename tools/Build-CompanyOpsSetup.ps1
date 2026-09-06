@@ -88,14 +88,9 @@ try {
         Invoke-Checked {
             $pwsh = (Get-Process -Id $PID).Path
             $contractTests = Join-Path $repositoryRoot 'tests\Run-ContractTests.ps1'
-            $contractProcess = Start-Process `
-                -FilePath $pwsh `
-                -ArgumentList @('-NoProfile', '-File', $contractTests) `
-                -NoNewWindow `
-                -Wait `
-                -PassThru
-            if ($contractProcess.ExitCode -ne 0) {
-                throw "运维声明契约测试失败，退出码 $($contractProcess.ExitCode)"
+            & $pwsh -NoProfile -File $contractTests
+            if ($LASTEXITCODE -ne 0) {
+                throw "运维声明契约测试失败，退出码 $LASTEXITCODE"
             }
             $global:LASTEXITCODE = 0
         } '运行运维声明契约测试'

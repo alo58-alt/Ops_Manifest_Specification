@@ -31,9 +31,12 @@ internal sealed class InstallerForm : Form
         Text = "请选择两个相互独立的本机目录。安装程序会完成其余工作。"
     };
     private bool _installing;
+    private readonly bool _upgradeOnly;
+    internal int ExitCode { get; private set; } = 2;
 
-    public InstallerForm()
+    public InstallerForm(bool upgradeOnly = false)
     {
+        _upgradeOnly = upgradeOnly;
         Text = "CompanyOps 安装程序";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(720, 545);
@@ -137,6 +140,11 @@ internal sealed class InstallerForm : Form
                 _approvedProjectRoots.Text = string.Join("; ", existing.AllowedProjectInstallRoots);
                 _installButton.Text = "升级并启动";
                 _status.Text = "已检测到现有 CompanyOps。可在本页完成一次性的受控更新授权，然后安全升级。";
+            }
+            else if (_upgradeOnly)
+            {
+                _installButton.Enabled = false;
+                _status.Text = "未检测到现有 CompanyOps；更新入口不会执行首次安装。";
             }
         }
         catch (Exception exception)
@@ -278,8 +286,10 @@ internal sealed class InstallerForm : Form
                     _dataRoot.Text,
                     _enableControlledUpdates.Checked,
                     _approvedProjectRoots.Text,
-                    progress));
+                    progress,
+                    requireExistingInstallation: _upgradeOnly));
 
+            ExitCode = 0;
             _progress.Visible = false;
             _installing = false;
             _status.ForeColor = Color.FromArgb(24, 128, 56);
@@ -301,9 +311,11 @@ internal sealed class InstallerForm : Form
                 // Installation is already complete. The URL remains visible in the success message.
             }
             _installButton.Text = result.WasUpgrade ? "升级完成" : "安装完成";
+            if (_upgradeOnly) { Close(); }
         }
         catch (Exception exception)
         {
+            ExitCode = 1;
             _installing = false;
             _installButton.Enabled = true;
             _progress.Visible = false;
