@@ -102,6 +102,8 @@ pwsh -NoProfile -File .\tools\Test-ProjectReleaseRehearsal.ps1 `
 
 服务器默认构建宿主是 Windows PowerShell 5.1。随 Agent 发布的 `New-ProjectRelease.ps1` 按需加载 ZIP 程序集，以流式 SHA-256 计算哈希，并调用同目录的自包含 `CompanyOps.Agent.exe --validate-release <Manifest> <ArtifactDirectory>` 校验 Schema、制品哈希和大小。该入口在创建 Host 之前返回，不启动服务、盘点或写入 Agent 状态；服务器不需要为校验额外安装 PowerShell 7 或 .NET SDK。规范源码目录仍使用 `Test-OpsManifest.ps1` 和开发机 PowerShell 7。发布前必须验证实际安装包布局，不能只在源码工具目录构建通过。
 
+该宿主执行的含中文 `.ps1`（包括项目的 `Build-CompanyOpsRelease.ps1` 及其调用脚本）必须保存为 **UTF-8 with BOM**。缺少 BOM 时，Windows PowerShell 5.1 按系统 ANSI 代码页读取；默认使用 UTF-8 的开发机可能通过，而 GBK 服务器出现乱码、引号不闭合或 `UnexpectedToken`。随包发布工具的回归使用实际 Windows PowerShell 5.1 解析器，分别指定 GBK 936、西欧 1252 和 UTF-8 65001 为文件读取的回退编码，检查 BOM 检测后的完整文本与 UTF-8 原文一致；另覆盖含中文路径的实际构建和发布校验。测试不修改系统区域或编码设置。
+
 默认从候选包的**同一载荷**衍生 `0.0.0-rehearsal.baseline`，因此证明的是部署事务，不证明两个业务版本之间的数据兼容。可通过 `-BaselineReleaseManifestPath` 传入另一个真实基线包（须匹配同一 ProjectManifest 契约），通过 `-OutputDirectory` 指定不存在的输出目录。报告 `rehearsal-result.json` 显式记录是否衍生基线；每次演练覆盖：
 
 | 检查 | 通过标准 |
