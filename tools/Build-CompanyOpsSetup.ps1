@@ -172,7 +172,8 @@ try {
 
     Write-Host ''
     Write-Host '透明离线安装包生成成功。' -ForegroundColor Green
-    Write-Host "把 ZIP 复制到服务器、完整解压后双击 Setup\CompanyOps-Setup.exe：$packageOutput" -ForegroundColor Green
+    Write-Host "本机安装/升级入口：$publishedSetup" -ForegroundColor Green
+    Write-Host "离线备用 ZIP：$packageOutput"
     Write-Host "SHA-256 已保存：$hashOutput"
 }
 finally {
