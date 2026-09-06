@@ -70,6 +70,22 @@ public sealed class ExistingProjectOnboardingService(
             };
         }
 
+        // A deployment can finish between the first plan and acquiring the project
+        // lease. Recheck under that same lease before changing host declarations.
+        var lockedPlan = await CreatePlanAsync(request, cancellationToken);
+        if (!lockedPlan.Result.CanApply || lockedPlan.Result.PlanToken != plan.Result.PlanToken)
+        {
+            return lockedPlan.Result with
+            {
+                Action = ExistingProjectOnboardingAction.Apply,
+                Outcome = OperationOutcome.Rejected,
+                CanApply = false,
+                ErrorCode = "onboarding_plan_changed",
+                Detail = "项目材料或安装状态已变化，请重新检查后再确认接入。"
+            };
+        }
+        plan = lockedPlan;
+
         ManifestWriteResult? projectWrite = null;
         ManifestWriteResult? bindingWrite = null;
         var projectExistedBefore = File.Exists(plan.ProjectDestination);
@@ -484,6 +500,8 @@ public sealed class ExistingProjectOnboardingService(
                     manifest,
                     components,
                     binding,
+                    string.IsNullOrWhiteSpace(request.DataRoot),
+                    string.IsNullOrWhiteSpace(request.LogsRoot),
                     problems,
                     cancellationToken);
                 existingBindingJson = existingDocuments.BindingJson;
@@ -518,6 +536,11 @@ public sealed class ExistingProjectOnboardingService(
                 steps.Add("现有运行配置和 Secret 保持由项目持有；CompanyOps 未读取或复制其值");
             }
             steps.Add("端口、目录和现有 CompanyOps 声明未发现冲突");
+            if (existingBindingJson is not null && binding?["roots"]?["source"] is not null &&
+                JsonNode.Parse(existingBindingJson)?["roots"]?["source"] is null)
+            {
+                steps.Add($"首次发布目录绑定：源码 {binding["roots"]!["source"]}；安装 {binding["roots"]!["install"]}；数据 {binding["roots"]!["data"]}；日志 {binding["roots"]!["logs"]}；仅更新声明，不移动文件");
+            }
             steps.Add(alreadyOnboarded
                 ? "确认后只同步 ProjectManifest 和 EnvironmentBinding，不控制业务服务"
                 : "确认后只导入 ProjectManifest 和 EnvironmentBinding，不控制业务服务");
@@ -631,6 +654,8 @@ public sealed class ExistingProjectOnboardingService(
         JsonObject proposedManifest,
         IReadOnlyList<OnboardingComponentProposal> components,
         JsonObject proposedBinding,
+        bool useExistingDataRoot,
+        bool useExistingLogsRoot,
         ICollection<string> problems,
         CancellationToken cancellationToken)
     {
@@ -678,14 +703,25 @@ public sealed class ExistingProjectOnboardingService(
         {
             var existingBinding = sameBinding[0].Root;
             existingBindingJson = existingBinding.ToJsonString(jsonOptions);
+            var separatesUndeployedRoots = CanSeparateUndeployedGitBuildRoots(
+                existingBinding, proposedBinding, proposedManifest, catalog);
+            // Omitted persistence roots keep the existing host binding, including
+            // later declaration refreshes after the first release-root separation.
+            foreach (var (name, useExisting) in new[] { ("data", useExistingDataRoot), ("logs", useExistingLogsRoot) })
+            {
+                if (useExisting)
+                {
+                    proposedBinding["roots"]![name] = existingBinding["roots"]![name]!.DeepClone();
+                }
+            }
             var existingRevision = existingBinding["metadata"]?["revision"]?.GetValue<int>() ?? 1;
             proposedBinding["metadata"]!["revision"] = existingRevision;
             if (!JsonNode.DeepEquals(existingBinding, proposedBinding))
             {
-                if (!BindingEvolutionIsSafe(existingBinding, proposedBinding))
+                if (!BindingEvolutionIsSafe(existingBinding, proposedBinding, separatesUndeployedRoots))
                 {
                     problems.Add(
-                        $"当前主机已有 {projectId}/{environment} EnvironmentBinding；只允许修正端口或新增保持原绑定不变的组件");
+                        $"当前主机已有 {projectId}/{environment} EnvironmentBinding；只允许修正端口、新增保持原绑定不变的组件，或在尚无发布状态时把原项目目录保留为源码并选择空的独立安装目录；数据、日志和既有原生绑定必须保留");
                 }
                 else if (existingRevision == int.MaxValue)
                 {
@@ -797,10 +833,49 @@ public sealed class ExistingProjectOnboardingService(
                new Dictionary<string, int>(StringComparer.Ordinal);
     }
 
-    private static bool BindingEvolutionIsSafe(JsonObject existing, JsonObject proposed)
+    private static bool CanSeparateUndeployedGitBuildRoots(
+        JsonObject existing,
+        JsonObject proposed,
+        JsonObject projectManifest,
+        ManifestCatalogSnapshot catalog)
+    {
+        var oldInstall = existing["roots"]?["install"]?.GetValue<string>();
+        var source = proposed["roots"]?["source"]?.GetValue<string>();
+        var install = proposed["roots"]?["install"]?.GetValue<string>();
+        if (projectManifest["update"]?["source"]?["kind"]?.GetValue<string>() != "gitBuildRelease" ||
+            existing["roots"]?["source"] is not null ||
+            oldInstall is null || source is null || install is null ||
+            !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(oldInstall)), source, StringComparison.OrdinalIgnoreCase) ||
+            PathsOverlap(source, install) ||
+            catalog.Entries.Any(entry => !entry.IsValid ||
+                (entry.ManifestKind == "InstalledState" && entry.ProjectId == GetString(existing, "metadata", "projectId"))))
+        {
+            return false;
+        }
+
+        // A missing state document does not erase physical evidence of deployment.
+        // A fresh release root is mandatory; this operation only changes declarations.
+        try
+        {
+            return !File.Exists(Path.Combine(oldInstall, "current.release.json")) &&
+                   !Directory.Exists(Path.Combine(oldInstall, "releases")) &&
+                   Directory.Exists(install) &&
+                   !Directory.EnumerateFileSystemEntries(install).Any();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool BindingEvolutionIsSafe(JsonObject existing, JsonObject proposed, bool separatesUndeployedRoots)
     {
         var existingImmutable = existing.DeepClone().AsObject();
         var proposedImmutable = proposed.DeepClone().AsObject();
+        if (separatesUndeployedRoots)
+        {
+            existingImmutable["roots"]!["install"] = proposedImmutable["roots"]!["install"]!.DeepClone();
+        }
         if (existingImmutable["roots"]?["source"] is null)
         {
             proposedImmutable["roots"]?.AsObject().Remove("source");

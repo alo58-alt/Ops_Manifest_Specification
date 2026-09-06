@@ -13,6 +13,117 @@ namespace CompanyOps.Agent.Tests;
 
 public sealed class ExistingProjectOnboardingServiceTests
 {
+    [Theory]
+    [InlineData("clean")]
+    [InlineData("occupied-target")]
+    [InlineData("release-pointer")]
+    [InlineData("release-directory")]
+    [InlineData("installed-state")]
+    [InlineData("invalid-state")]
+    [InlineData("changed-data")]
+    [InlineData("state-after-plan")]
+    public async Task LegacyDeclaration_CanSeparateRootsOnlyBeforeFirstDeployment(string scenario)
+    {
+        using var directory = new TestDirectory();
+        var projectRoot = Path.Combine(directory.FullPath, "source");
+        var installRoot = Path.Combine(directory.FullPath, "install");
+        Directory.CreateDirectory(Path.Combine(projectRoot, "ops"));
+        Directory.CreateDirectory(installRoot);
+        await WriteProjectManifestAsync(projectRoot);
+        await WriteOpsReadmeAsync(projectRoot);
+        var fixture = await CreateFixtureAsync(directory.FullPath);
+        fixture.Cache.Update(new InventorySnapshot("TEST-HOST", DateTimeOffset.UtcNow,
+            [new InventorySection("windows-services", InventorySourceStatus.Available,
+                [new InventoryItem("OnboardingFixture", "API", "Running", new Dictionary<string, string?>
+                {
+                    ["binaryPath"] = Path.Combine(projectRoot, "service.exe")
+                })])]), new ManifestCatalogSnapshot(DateTimeOffset.UtcNow, []));
+        var request = new ExistingProjectOnboardingRequest(projectRoot, "production", ExistingProjectOnboardingAction.Plan);
+        var firstPlan = await fixture.Service.ExecuteAsync(request, TestContext.Current.CancellationToken);
+        var firstApply = await fixture.Service.ExecuteAsync(request with
+        {
+            Action = ExistingProjectOnboardingAction.Apply, ExpectedPlanToken = firstPlan.PlanToken
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(OperationOutcome.Succeeded, firstApply.Outcome);
+        var bindingPath = Assert.Single(Directory.EnumerateFiles(fixture.ManifestRoot, "*.binding.json"));
+        var originalBinding = await File.ReadAllTextAsync(bindingPath, TestContext.Current.CancellationToken);
+        var originalManifestPath = Assert.Single(Directory.EnumerateFiles(fixture.ManifestRoot, "*.project-manifest.json"));
+        var originalManifest = await File.ReadAllTextAsync(originalManifestPath, TestContext.Current.CancellationToken);
+
+        await WriteProjectManifestWithInteractiveAsync(projectRoot);
+        var manifestPath = Path.Combine(projectRoot, "ops", "project-manifest.json");
+        var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath, TestContext.Current.CancellationToken))!;
+        manifest["update"]!["source"] = JsonNode.Parse("""
+            {"kind":"gitBuildRelease","remote":"origin","branch":"master",
+             "remoteUrl":"https://gitee.com/example/onboarding-fixture.git","buildProfile":"projectReleaseV1"}
+            """);
+        await File.WriteAllTextAsync(manifestPath, manifest.ToJsonString(), TestContext.Current.CancellationToken);
+        if (scenario == "occupied-target")
+            await File.WriteAllTextAsync(Path.Combine(installRoot, "keep.txt"), "preserve", TestContext.Current.CancellationToken);
+        if (scenario == "release-pointer")
+            await File.WriteAllTextAsync(Path.Combine(projectRoot, "current.release.json"), "{}", TestContext.Current.CancellationToken);
+        if (scenario == "release-directory") Directory.CreateDirectory(Path.Combine(projectRoot, "releases"));
+        if (scenario == "installed-state")
+        {
+            var installed = JsonNode.Parse(await File.ReadAllTextAsync(
+                Path.Combine(AppContext.BaseDirectory, "examples", "valid", "installed-state.json"),
+                TestContext.Current.CancellationToken))!;
+            installed["metadata"]!["projectId"] = "onboarding-fixture";
+            installed["metadata"]!["hostId"] = "TEST-HOST";
+            await File.WriteAllTextAsync(Path.Combine(fixture.ManifestRoot, "existing.installed.json"),
+                installed.ToJsonString(), TestContext.Current.CancellationToken);
+        }
+        if (scenario == "invalid-state")
+            await File.WriteAllTextAsync(Path.Combine(fixture.ManifestRoot, "unknown.json"), "{", TestContext.Current.CancellationToken);
+        var migration = request with
+        {
+            InstallRoot = installRoot,
+            InteractiveOwnerSid = "S-1-5-21-1234",
+            DataRoot = scenario == "changed-data" ? installRoot : null
+        };
+        var plan = await fixture.Service.ExecuteAsync(migration, TestContext.Current.CancellationToken);
+        if (scenario is "clean" or "state-after-plan")
+        {
+            Assert.True(plan.CanApply, string.Join("; ", plan.Problems));
+            if (scenario == "state-after-plan")
+                await File.WriteAllTextAsync(Path.Combine(projectRoot, "current.release.json"), "{}", TestContext.Current.CancellationToken);
+            var applied = await fixture.Service.ExecuteAsync(migration with
+            {
+                Action = ExistingProjectOnboardingAction.Apply, ExpectedPlanToken = plan.PlanToken
+            }, TestContext.Current.CancellationToken);
+            Assert.Equal(scenario == "clean" ? OperationOutcome.Succeeded : OperationOutcome.Rejected, applied.Outcome);
+        }
+        else
+        {
+            Assert.False(plan.CanApply);
+            Assert.Equal(OperationOutcome.Rejected, plan.Outcome);
+        }
+        if (scenario == "clean")
+        {
+            var binding = JsonNode.Parse(await File.ReadAllTextAsync(bindingPath, TestContext.Current.CancellationToken))!;
+            Assert.Equal(projectRoot, binding["roots"]!["source"]!.GetValue<string>());
+            Assert.Equal(installRoot, binding["roots"]!["install"]!.GetValue<string>());
+            Assert.Equal(projectRoot, binding["roots"]!["data"]!.GetValue<string>());
+            Assert.Equal(projectRoot, binding["roots"]!["logs"]!.GetValue<string>());
+            Assert.Equal(2, binding["metadata"]!["revision"]!.GetValue<int>());
+            Assert.Equal(2, binding["componentBindings"]!.AsArray().Count);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(installRoot));
+            Assert.DoesNotContain(Directory.EnumerateFiles(fixture.ManifestRoot), path => path.Contains("installed"));
+            var refresh = await fixture.Service.ExecuteAsync(migration, TestContext.Current.CancellationToken);
+            Assert.True(refresh.CanApply, string.Join("; ", refresh.Problems));
+            var anotherInstallRoot = Path.Combine(directory.FullPath, "another-install");
+            Directory.CreateDirectory(anotherInstallRoot);
+            var repeatedMove = await fixture.Service.ExecuteAsync(migration with { InstallRoot = anotherInstallRoot },
+                TestContext.Current.CancellationToken);
+            Assert.False(repeatedMove.CanApply);
+        }
+        else
+        {
+            Assert.Equal(originalBinding, await File.ReadAllTextAsync(bindingPath, TestContext.Current.CancellationToken));
+            Assert.Equal(originalManifest, await File.ReadAllTextAsync(originalManifestPath, TestContext.Current.CancellationToken));
+        }
+    }
+
     [Fact]
     public async Task PlanAndApply_GitBuildRelease_BindsSeparateSourceAndInstallRoots()
     {
