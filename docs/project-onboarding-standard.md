@@ -58,11 +58,12 @@
 - 更新失败回滚验证；
 - 数据库、配置和持久数据的兼容或备份方案。
 
-L3 有三条互斥路径：
+L3 默认使用开发机或 CI 生成的预编译包：构建完成后自动传送 `ProjectManifest + ReleaseManifest + ZIP` 到服务器发布目录，服务端校验哈希、预检并执行受控发布。服务器不需要业务构建依赖，也不运行构建或测试；项目不声明 `update.source`。Git push 只发布源码，不能替代编译、制品发布和现场升级。
+
+另外两种源码更新能力仅在明确选择时使用，不能作为默认现场流程：
 
 - 小型兼容更新可声明 `update.source.kind=gitFastForward`，CompanyOps 只允许 HTTPS 远端、声明分支、干净工作树和 fast-forward。依赖清单变化、前端源码未同时交付构建产物、本地分支分叉或远端 URL 不符时拒绝；
 - 已提供标准发布脚本的独立项目可声明 `update.source.kind=gitBuildRelease` 与 `buildProfile=projectReleaseV1`。接入时分别选择源码目录和安装目录；CompanyOps 快进源码仓库，只接受目标提交上唯一的 `v<SemVer>` 标签，只调用固定的 `tools\Build-CompanyOpsRelease.ps1`，然后把生成的 `ReleaseManifest + ZIP + SHA-256` 送入通用受控发布；
-- 不允许服务器构建或不满足固定约定的项目，由构建/CI 生成 `ReleaseManifest + ZIP + SHA-256`，再手工选择发布目录走受控发布。
 
 `gitBuildRelease` 不在 CompanyOps 仓库内复制业务项目，也不要求两个仓库合并。服务器保留一个独立业务源码 clone；`EnvironmentBinding.roots.source` 绑定该 clone，`roots.install` 绑定不可变 release 根。两个目录必须位于管理员配置的受控项目父目录之下，并且不能相同或互相嵌套。构建环境必须预先装好项目明确需要的 SDK/虚拟环境/前端依赖；Agent 不在发布时临时安装依赖。构建失败时当前业务 release 不停止、不切换。
 
@@ -76,19 +77,19 @@ L3 有三条互斥路径：
 
 `ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环；IIS、静态站点、计划任务和遗留 PM2 在没有对应现场验收前，不获得 L3 更新权限。
 
-日常操作从 Console“项目与组件”中的更新入口进入。`gitBuildRelease` 项目点击“检查更新”读取远端标签和变更，再点击“构建并更新”；不需要 FTP、共享目录、复制 ZIP 或手工解压。其他项目在“更新项目”中选择同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
+日常操作从 Console“项目与组件”中的更新入口进入，在“更新项目”中选择已由开发端发布、同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。SSH 运维可调用本机 `companyops.exe deploy --data-file <请求 JSON>`，先 Plan，再携带当前 generation 与唯一幂等键执行 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行。仅明确启用 `gitBuildRelease` 的项目使用“检查更新 → 构建并更新”。
 
 Windows 上解包后的 release 目录可能暂时不可移动。Agent 对同一 staging→release 原子重命名及失败目录隔离，仅在 Windows 访问拒绝、共享冲突或锁冲突且源目录仍存在、目标不存在时重试，累计等待不超过 5 秒；等待支持取消，不覆盖目标、不结束占用进程。持续失败仍进入原有状态恢复与端口预留释放流程，原生入口不会在 staging 移动成功前切换。验证使用临时目录中的真实 Windows 文件锁，覆盖释放后成功、持续占用、取消和目标已存在。
 
-### 2.4 Git 构建发布的项目复用流程
+### 2.4 预编译发布与隔离演练的项目复用流程
 
-本节是项目开发者落实 `gitBuildRelease` 的通用入口。发布人员的 Console 操作见[完整操作手册 11.1](complete-operations-manual.md#111-console-图形页面普通运维优先)。新项目复用同一契约和发布事务，不复制 WebQuizBot 的端口、原生服务名称、浏览器依赖或业务数据。
+本节是项目开发者落实预编译发布的通用入口。发布人员的 Console 操作见[完整操作手册 11.1](complete-operations-manual.md#111-console-图形页面普通运维优先)。固定构建脚本在开发机或 CI 使用，同一契约也可服务显式启用的 `gitBuildRelease`；新项目不复制 WebQuizBot 的端口、原生服务名称、浏览器依赖或业务数据。
 
-1. **发布前固定源码。** 在项目自己的独立仓库准备代码和受版本控制的产物，完成相关验证，再由有权限的发布者提交并发布目标分支和唯一 `v<SemVer>` 标签。当前实现选择的是声明分支的远端 HEAD，该提交没有标签时会拒绝，不会自动退回最近一个旧标签。Git push 完成只证明远端代码可取得。
+1. **发布前固定源码。** 在项目自己的独立仓库准备代码和受版本控制的产物，完成相关验证，再由有权限的发布者提交并发布目标分支和唯一 `v<SemVer>` 标签。Git push 完成只证明远端代码可取得；已发布标签、声明哈希或 ZIP 不能被新字节覆盖，变化必须形成新版本。
 2. **在干净 clone 复现构建。** 固定项目所需 SDK、Python 虚拟环境、前端依赖与网络策略。对会进入载荷或参与哈希的文本/构建文件明确 `.gitattributes`，使 Windows checkout 不改变预期字节。被跟踪的前端产物必须和源码同步；不能删除“构建后工作树必须干净”的门禁来放行旧产物。不要把 `node_modules`、虚拟环境、账号库或认证状态复制进发布包。
 3. **实现固定构建约定。** `tools/Build-CompanyOpsRelease.ps1` 接收 `Version`、`ReleaseId`、`OpsSpecificationRoot`、`OutputDirectory`，核对 `COMPANYOPS_EXPECTED_SOURCE_REVISION` 与实际 HEAD，生成完整组件载荷及 `release-manifest.json`。Manifest 中的项目、版本、ReleaseId、sourceRevision 与实际构建一致，ProjectManifest 哈希与主机已接入声明的字节一致。脚本仅构建，不启动业务进程或控制服务。
 4. **发布前跑隔离事务演练。** 使用下方通用命令把实际 ZIP 接入真实部署引擎，验证失败路径。每次输出到新的独立目录，保留输入哈希、步骤和审计；演练标签/提交只在隔离仓库使用，不冒充已发布版本。
-5. **现场完成绑定和验收。** 在明确的目标主机上核对独立的 source/install 目录、既有原生资源、持久数据根、只读仓库凭据与操作权限。ProjectManifest 变化时先按现有重新接入规则同步声明；仅字节或换行变化也可能触发哈希不一致，不能绕过校验。之后由有权限的操作者在 Console 执行“检查更新 → 构建并更新”，记录安装版本、原生入口、健康和一次真实业务操作；需要交互进程的项目另核对登录会话。数据库回滚与断电恢复必须单独验收。
+5. **自动传包并现场验收。** 在明确的目标主机上核对安装目录、既有原生资源、持久数据根与操作权限。通过已授权 SMB 或 SSH 传送正式制品，传输后重新核对大小和 SHA-256，完成前不选择该版本。ProjectManifest 变化时按现有重新接入规则同步声明；仅换行变化也可能触发哈希不一致，不能绕过校验。之后从 Console 或本机 CLI 执行 Plan 与 Update，记录安装版本、原生入口、健康和业务读取结果；需要交互进程的项目另核对登录会话。数据库回滚与断电恢复必须单独验收。
 
 开发机在本规范仓库执行（需预先具备本仓库的 .NET SDK/NuGet 依赖，脚本不安装系统依赖）：
 

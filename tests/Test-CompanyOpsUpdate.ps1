@@ -106,7 +106,7 @@ try {
         }
         Write-Host "[PASS] $script:scenario"
     }
-    Write-Host 'CompanyOps 更新器：19 个隔离编排场景 + 输出/超时检查通过；未连接 Git 远端或调用真实安装器。'
+    Write-Host 'COMPANYOPS-SOURCE-UPDATE-TESTS-PASSED:19'
 } finally {
     $resolved = [IO.Path]::GetFullPath($testRoot)
     if (-not $resolved.StartsWith([IO.Path]::GetFullPath($testParent) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝清理测试根目录外的路径' }

@@ -1,24 +1,60 @@
-# CompanyOps 三步安装
+# CompanyOps 安装与升级
 
-## 日常升级：服务器直接更新，不拷贝安装包
+## 日常升级：开发机编译，自动传包，服务器安装
 
-服务器已有独立的 Ops 源码 clone 和 CompanyOps 安装时，先在源码仓库的 `main` 分支执行一次 `git pull --ff-only`，取得新的更新入口。以后在服务器双击仓库根目录的 **`更新CompanyOps.cmd`** 即可：
+CompanyOps 和业务项目都默认使用预编译制品。Git push 发布源码；开发机完成编译、测试和制品校验后，发布工具把文件自动传到服务器。服务器不编译，不运行测试，不需要 Git、.NET SDK、Node.js/npm 或 PowerShell 7。
 
-1. 更新器检查精确官方远端、`main` 分支、干净工作树和已安装路径，然后只允许快进到远端提交；
-2. 服务器运行固定构建入口并完成测试、源码版本和逐文件哈希校验，现有服务在这一阶段保持运行；
-3. 自动打开升级器，沿用原程序目录、数据目录和已有授权。核对后点击“升级并启动”，由 Setup 完成切换、健康复核和失败恢复。
+### 开发端准备并发布
 
-这条路径不需要从开发电脑复制 ZIP，也不需要在服务器手工解压。源码目录必须与实际 CompanyOps 程序目录互不嵌套。服务器需要预先具备 Git、PowerShell 7、.NET SDK（见 `global.json`）和 Node.js/npm（Node `20.19+` 或 `22.12+`）；更新器不会安装系统依赖。
+在开发电脑的 Ops 仓库中完成提交及相关检查，然后执行：
 
-.NET SDK 最低为 `10.0.302`，优先使用 `10.0.3xx` 的最新补丁；缺少该功能版本时，允许同一 `10.0` 系列的更高稳定功能版本，例如 `10.0.400`。不会自动采用 `10.1`、`11.0` 或预览版。安装新工具后应重新打开终端，让 PATH 生效；SDK 不匹配应检查 `dotnet --list-sdks` 和 `global.json`，重启服务器不能解决版本选择限制。
+```powershell
+pwsh -NoProfile -File .\tools\Build-CompanyOpsSetup.ps1
+pwsh -NoProfile -File .\tools\Publish-CompanyOpsPackage.ps1 `
+  -PackageRoot .\artifacts\setup\package\CompanyOps-Offline `
+  -FeedRoot '\\s4090\project\CompanyOps-Packages\platform'
+```
 
-如果旧版 CMD 入口出现乱码或将 `ile`、`not` 等命令片段报告为“不是内部或外部命令”，在服务器的 Ops 源码目录直接运行 `pwsh -NoProfile -File .\tools\Update-CompanyOps.ps1`。更新器会拉取修复后的入口；后续仍使用 `更新CompanyOps.cmd`。两个根目录 CMD 入口使用 ASCII 文本，Git 通过 `.gitattributes` 强制 CMD/BAT 签出为 Windows CRLF 换行；中文提示由 PowerShell 输出。
+`FeedRoot` 是本次明确授权的服务器发布目录，其他主机应改为自己的共享路径。发布工具在临时目录传送文件并逐一验证 SHA-256 和大小，再将完整源码提交作为不可变版本目录，最后原子更新 `latest.json`。传送失败时旧索引保持不变；同名版本目录已存在时拒绝覆盖。安装器及依赖也在逐文件记录内，不只校验业务载荷。工具同时生成服务器使用的 `更新CompanyOps.cmd` 和 PowerShell 脚本，不启动安装器、不操作服务。
 
-相同已安装提交会直接结束，不构建、不重启；脏工作树、分支分叉、已知版本降级、构建失败或校验失败均拒绝升级。
+开发机依赖由仓库 `global.json` 和前端清单限定；这些依赖不转移给服务器。旧的源码更新工具保留为 `tools\Update-CompanyOpsFromSource.ps1`，仅供明确选择源码构建的工程场景，日常入口不会调用它。
 
-日志位于源码目录 `artifacts\platform-updates`。工程验证可运行 `pwsh -NoProfile -File .\tools\Update-CompanyOps.ps1 -CheckOnly`（获取远端并检查，不改工作树、不构建、不启动安装器）或 `-PrepareOnly`（完成拉取、构建及校验，不启动安装器）。安装器的 `--upgrade-only` 模式拒绝首次安装，取消或失败不会向更新器返回成功；一台主机上的安装和升级通过同一操作门禁互斥。
+### 服务器升级
 
-WebQuizBot 等业务项目仍在 Console 点击“检查更新 → 构建并更新”。Ops 只有自身代码变化时才升级。以下离线包流程用于首次安装或离线备用。
+在服务器发布目录双击 `更新CompanyOps.cmd`。本例入口为：
+
+```text
+D:\project\CompanyOps-Packages\platform\更新CompanyOps.cmd
+```
+
+脚本使用 Windows 自带 PowerShell 5.1，校验发布索引、全包哈希、文件大小和路径，再打开 Setup。核对原程序目录、数据目录及既有授权后点击“升级并启动”。仓库根目录的同名入口会让操作者选择含 `latest.json` 的发布目录，不会拉取源码或构建。
+
+### SSH 命令行升级
+
+通过 SSH 使用现有 Session Agent 所属的管理员账号执行。程序只接受既有安装，保留程序目录、数据目录、会话归属及授权配置；旧版本、包版本或目录与请求不一致时拒绝，不会转为首次安装。
+
+在服务器 PowerShell 中先准备明确的参数，读取安装包与当前程序的完整提交版本：
+
+```powershell
+$feed = 'D:\project\CompanyOps-Packages\platform'
+$install = 'D:\CompanyOps'
+$data = 'D:\CompanyOpsData'
+$version = (Get-Item -LiteralPath "$install\Agent\CompanyOps.Agent.dll").VersionInfo.ProductVersion
+if ($version -notmatch '\+([a-f0-9]{40})$') { throw '无法识别已安装版本' }
+$from = $Matches[1]
+& "$feed\tools\Update-CompanyOps.ps1" -FeedRoot $feed -Unattended `
+  -FromRevision $from -InstallRoot $install -DataRoot $data
+```
+
+未加 `-Apply` 时只预检并返回 `Planned`；确认目标后用相同参数增加 `-Apply` 执行。相同版本返回 `AlreadyCurrent`。只有实际切换和健康检查通过才返回 `Upgraded`；失败返回非零退出码并复用 Setup 失败恢复。日志及机器可读结果位于发布目录 `upgrade-logs`。此入口不弹 GUI，不改变主机授权，不注册首套服务；图形安装器的 UAC 仍由操作者确认。
+
+更新工具只检查文件时使用 `-FeedRoot <目录> -CheckOnly`，不会启动安装器。CMD 入口采用 ASCII + CRLF；会由 Windows PowerShell 5.1 执行且含中文的脚本采用 UTF-8 with BOM，避免服务器代码页差异。
+
+### 业务项目
+
+WebQuizBot 等业务项目由各自开发仓库构建和发布 `ProjectManifest + ReleaseManifest + ZIP`，传到服务器后使用 Console“更新项目”或本机 CLI 的 Plan / Update。项目默认不声明服务器 Git 构建来源。已有项目保留安装根、数据目录、日志目录和原生资源绑定；声明变化先按接入规则同步。Ops 只有自身发生变化时才需要升级。
+
+## 首次安装：使用开发机生成的离线包
 
 ## 第一步：生成安装包
 

@@ -5,6 +5,12 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--upgrade-unattended")
+        {
+            Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+            return UnattendedUpgradeCommand.Run(args, Console.Out, Console.Error);
+        }
+
         if (args.Length is 1 or 2 &&
             string.Equals(args[0], "--verify-payload", StringComparison.OrdinalIgnoreCase))
         {
@@ -23,7 +29,7 @@ internal static class Program
         var upgradeOnly = args.Length == 1 && args[0] == "--upgrade-only";
         if (args.Length != 0 && !upgradeOnly)
         {
-            Console.Error.WriteLine("只支持 --verify-payload [目录] 或 --upgrade-only。");
+            Console.Error.WriteLine("只支持 --verify-payload [目录]、--upgrade-only 或 --upgrade-unattended 参数组。");
             return 2;
         }
 

@@ -15,7 +15,7 @@
 - 分级运维：L1 观察与健康、L2 精确 Windows Service 启停、L3 原地 Git 快进、跨仓库 Git 构建发布或既有 ReleaseManifest 制品发布；
 - `gitBuildRelease` 把独立业务源码仓库快进到唯一 `v<SemVer>` 标签提交，只调用项目固定的 `tools\Build-CompanyOpsRelease.ps1`，再把生成的 `ReleaseManifest + ZIP` 交给同一部署事务；声明不能携带命令或脚本路径；
 - 两种 L3 Git 更新都拒绝脏工作树、分叉和远端不匹配；原地 `gitFastForward` 还拒绝依赖清单变化和缺少前端构建产物，跨仓库构建失败时保持当前已安装 release 继续运行；
-- 平台自身通过服务器上的 `更新CompanyOps.cmd` 获取官方仓库新版、构建和校验，再打开 Setup 受控升级；无需从开发端拷贝 ZIP，失败恢复复用现有安装器，详见[安装与升级入口](三步安装CompanyOps.md)；
+- 平台自身由开发机完成编译和测试，发布工具自动传送预编译文件并校验；服务器上的 `更新CompanyOps.cmd` 只校验和升级，也支持 SSH 命令行预检及升级，服务器无需构建工具，详见[安装与升级入口](三步安装CompanyOps.md)；
 - 诊断 CLI：查询与结构化 `operate` / `deploy` 请求，按命令设置有上限的等待时间。
 
 `Ops:EnableMutations` 默认为 `false`。仓库测试不会注册、启动、停止或修改本机现有服务、IIS、任务计划或真实 PM2 daemon。

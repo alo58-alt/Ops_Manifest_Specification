@@ -20,6 +20,10 @@
   <ItemGroup>
     <Content Include="..\Test-CompanyOpsUpdate.ps1" Link="Test-CompanyOpsUpdate.ps1" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\tools\Update-CompanyOps.ps1" Link="Update-CompanyOps.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\Update-CompanyOpsFromSource.ps1" Link="Update-CompanyOpsFromSource.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Test-CompanyOpsPrebuiltUpdate.ps1" Link="Test-CompanyOpsPrebuiltUpdate.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\Update-CompanyOps.ps1" Link="tools\Update-CompanyOps.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\Publish-CompanyOpsPackage.ps1" Link="tools\Publish-CompanyOpsPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\更新CompanyOps.cmd" Link="更新CompanyOps.cmd" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\生成CompanyOps安装包.cmd" Link="生成CompanyOps安装包.cmd" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

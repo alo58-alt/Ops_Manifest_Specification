@@ -148,6 +148,44 @@ internal sealed class InstallerEngine
         }
     }
 
+    internal UnattendedUpgradeResult UpgradeUnattended(UnattendedUpgradeRequest request, IProgress<string> progress)
+    {
+        var installRoot = ValidateLocalDirectory(request.InstallRoot, "程序目录");
+        var dataRoot = ValidateLocalDirectory(request.DataRoot, "数据目录");
+        ValidateIndependentRoots(installRoot, dataRoot);
+        EnsureAdministrator();
+        using var setupLease = PlatformSetupLease.Acquire();
+        var existing = DetectExistingInstallation();
+        RequireExistingInstallation(existing, required: true);
+        var packageRoot = ResolvePackageRoot(null);
+        var installedRevision = ReadAssemblyRevision(Path.Combine(existing!.InstallRoot, "Agent", "CompanyOps.Agent.dll"));
+        var packageRevision = ReadAssemblyRevision(Path.Combine(packageRoot, "Payload", "Agent", "CompanyOps.Agent.dll"));
+        UnattendedUpgradeCommand.ValidateTarget(request, existing, installedRevision, packageRevision);
+        using var sessionSettings = JsonDocument.Parse(File.ReadAllText(Path.Combine(existing.InstallRoot, "SessionAgent", "appsettings.json")));
+        using var identity = WindowsIdentity.GetCurrent();
+        var currentSid = identity.User?.Value ?? throw new InvalidOperationException("无法识别升级用户 SID。");
+        var ownerPipe = sessionSettings.RootElement.GetProperty("SessionAgent").GetProperty("PipeName").GetString();
+        if (ownerPipe != $"CompanyOps.SessionAgent.{OwnerKey(currentSid)}")
+            throw new InvalidOperationException("命令行升级必须由现有 Session Agent 所属用户执行，不能变更交互会话归属。");
+        VerifyPackagePayload(packageRoot);
+        var roots = ValidateAllowedProjectInstallRoots(existing.EnableMutations, string.Join(';', existing.AllowedProjectInstallRoots));
+        if (!request.Apply || installedRevision == packageRevision)
+            return new UnattendedUpgradeResult(request.Apply ? "AlreadyCurrent" : "Planned", installedRevision,
+                packageRevision, existing.InstallRoot, existing.DataRoot, existing.EnableMutations, roots);
+        // Read permissions under the same lease as the version checks; SSH upgrades never change authorization.
+        var installed = Upgrade(existing, existing.EnableMutations, roots, progress, preserveSessionConfiguration: true);
+        return new UnattendedUpgradeResult("Upgraded", installedRevision, packageRevision,
+            installed.InstallRoot, installed.DataRoot, existing.EnableMutations, roots, installed.ConsoleUrl);
+    }
+
+    private static string ReadAssemblyRevision(string path)
+    {
+        var version = FileVersionInfo.GetVersionInfo(path).ProductVersion ?? string.Empty;
+        var match = Regex.Match(version, @"\+([a-fA-F0-9]{40})$", RegexOptions.CultureInvariant);
+        if (!match.Success) throw new InvalidOperationException("程序缺少完整源码提交版本，不能执行命令行升级。");
+        return match.Groups[1].Value.ToLowerInvariant();
+    }
+
     private InstallResult InstallFirstTime(
         string installRoot,
         string dataRoot,
@@ -286,7 +324,8 @@ internal sealed class InstallerEngine
         ExistingInstallation existing,
         bool enableControlledUpdates,
         string[] allowedProjectInstallRoots,
-        IProgress<string> progress)
+        IProgress<string> progress,
+        bool preserveSessionConfiguration = false)
     {
         progress.Report("正在校验升级包…");
         var stagingRoot = Path.Combine(
@@ -295,8 +334,7 @@ internal sealed class InstallerEngine
         var transactionId = Guid.NewGuid().ToString("N");
         var preparedRoot = Path.Combine(existing.InstallRoot, $".upgrade-new-{transactionId}");
         var backupRoot = Path.Combine(existing.InstallRoot, $".upgrade-backup-{transactionId}");
-        var servicesStopped = false;
-        var bridgeStopped = false;
+        var shutdownStarted = false;
         var switchedComponents = new List<string>();
         string? bridgeOwnerSid = null;
         try
@@ -323,6 +361,9 @@ internal sealed class InstallerEngine
                 }
                 File.Copy(currentConfig, preparedConfig, overwrite: true);
             }
+            if (preserveSessionConfiguration)
+                File.Copy(Path.Combine(existing.InstallRoot, @"SessionAgent\appsettings.json"),
+                    Path.Combine(preparedRoot, @"SessionAgent\appsettings.json"), overwrite: true);
             var currentBridgeConfig = Path.Combine(existing.InstallRoot, @"Pm2Bridge\appsettings.json");
             var preparedBridgeConfig = Path.Combine(preparedRoot, @"Pm2Bridge\appsettings.json");
             if (File.Exists(currentBridgeConfig))
@@ -346,12 +387,12 @@ internal sealed class InstallerEngine
             Directory.CreateDirectory(backupRoot);
 
             progress.Report("正在停止 CompanyOps 自身服务…");
+            // Recovery also covers a partial shutdown, before every service has stopped.
+            shutdownStarted = true;
             StopSessionAgentIfRunning(existing.InstallRoot);
             StopPm2BridgeIfConfigured(existing.InstallRoot, bridgeOwnerSid);
-            bridgeStopped = bridgeOwnerSid is not null;
             StopServiceIfRunning(ConsoleServiceName);
             StopServiceIfRunning(AgentServiceName);
-            servicesStopped = true;
 
             progress.Report("正在切换 CompanyOps 新版本…");
             foreach (var component in ProductComponents)
@@ -394,10 +435,9 @@ internal sealed class InstallerEngine
             RunSc("start", ConsoleServiceName);
             WaitForService(ConsoleServiceName, "RUNNING", TimeSpan.FromSeconds(30));
             WaitForConsole(existing.InstallRoot, TimeSpan.FromSeconds(30));
-            ConfigureSessionAgentFromAgentSettings(existing.InstallRoot);
+            if (!preserveSessionConfiguration) ConfigureSessionAgentFromAgentSettings(existing.InstallRoot);
             RegisterAndStartSessionAgent(existing.InstallRoot);
             StartPm2BridgeIfConfigured(existing.InstallRoot, bridgeOwnerSid);
-            bridgeStopped = false;
 
             var backupRemoved = TryDeleteDirectory(backupRoot);
             if (!backupRemoved)
@@ -414,7 +454,7 @@ internal sealed class InstallerEngine
         catch (Exception exception)
         {
             string recovery;
-            if (servicesStopped)
+            if (shutdownStarted)
             {
                 recovery = RestoreUpgrade(
                     existing.InstallRoot,
@@ -422,15 +462,6 @@ internal sealed class InstallerEngine
                     backupRoot,
                     switchedComponents,
                     bridgeOwnerSid);
-            }
-            else if (bridgeStopped)
-            {
-                recovery = StartPm2BridgeIfConfigured(
-                    existing.InstallRoot,
-                    bridgeOwnerSid,
-                    throwOnFailure: false)
-                    ? "尚未切换运行版本；PM2 owner Bridge 已恢复"
-                    : "尚未切换运行版本；PM2 owner Bridge 恢复失败";
             }
             else
             {
@@ -526,10 +557,21 @@ internal sealed class InstallerEngine
                 throwOnFailure: false);
             if (agent.ExitCode == 0 && console.ExitCode == 0 && bridge)
             {
-                TryDeleteDirectory(backupRoot);
-                return "旧版本已恢复并重新启动";
+                try
+                {
+                    WaitForService(AgentServiceName, "RUNNING", TimeSpan.FromSeconds(30));
+                    WaitForService(ConsoleServiceName, "RUNNING", TimeSpan.FromSeconds(30));
+                    WaitForConsole(installRoot, TimeSpan.FromSeconds(30));
+                    RegisterAndStartSessionAgent(installRoot);
+                    TryDeleteDirectory(backupRoot);
+                    return "旧版本已恢复，服务、Console 与 Session Agent 已重新就绪";
+                }
+                catch (Exception exception)
+                {
+                    errors.Add($"旧版本目录已恢复，但运行恢复未通过：{exception.Message}");
+                }
             }
-            errors.Add("旧版本目录已恢复，但服务重新启动失败，请检查 Windows 服务状态");
+            else errors.Add("旧版本目录已恢复，但服务重新启动失败，请检查 Windows 服务状态");
         }
         return string.Join("；", errors);
     }

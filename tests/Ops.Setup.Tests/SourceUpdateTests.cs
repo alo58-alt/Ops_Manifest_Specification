@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Xunit;
 
 namespace CompanyOps.Setup.Tests;
@@ -14,10 +15,12 @@ public sealed class SourceUpdateTests
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
         };
         foreach (var argument in new[] { "-NoProfile", "-File", Path.Combine(AppContext.BaseDirectory, "Test-CompanyOpsUpdate.ps1"),
-                     "-UpdaterPath", Path.Combine(AppContext.BaseDirectory, "Update-CompanyOps.ps1") })
+                     "-UpdaterPath", Path.Combine(AppContext.BaseDirectory, "Update-CompanyOpsFromSource.ps1") })
             process.StartInfo.ArgumentList.Add(argument);
         Assert.True(process.Start());
         var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
@@ -28,7 +31,7 @@ public sealed class SourceUpdateTests
         catch (OperationCanceledException) { process.Kill(entireProcessTree: true); throw; }
         var detail = await output + await error;
         Assert.True(process.ExitCode == 0, detail);
-        Assert.Contains("19 个隔离编排场景", detail, StringComparison.Ordinal);
+        Assert.Contains("COMPANYOPS-SOURCE-UPDATE-TESTS-PASSED:19", detail, StringComparison.Ordinal);
     }
 
     [Fact]
