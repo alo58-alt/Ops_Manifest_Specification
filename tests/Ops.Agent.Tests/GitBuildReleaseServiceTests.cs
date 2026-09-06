@@ -141,6 +141,44 @@ public sealed class GitBuildReleaseServiceTests
         Assert.Equal(2, deployments.Calls.Select(call => call.OperationId).Distinct().Count());
     }
 
+    [Theory]
+    [InlineData(true, false, "release_build_failed")]
+    [InlineData(false, true, "built_manifest_mismatch")]
+    public async Task Apply_FailedOrMismatchedBuild_NeverCallsDeployment(
+        bool failBuild, bool wrongRevision, string errorCode)
+    {
+        using var directory = new TestDirectory();
+        Directory.CreateDirectory(Path.Combine(directory.FullPath, ".git"));
+        var builder = new RecordingBuilder(directory.FullPath) { FailBuild = failBuild, WrongRevision = wrongRevision };
+        var deployments = new RecordingDeploymentExecutor();
+        var service = CreateService(directory.FullPath, new FakeGitRunner(), builder, deployments);
+
+        var result = await service.ExecuteAsync(Request(GitUpdateAction.Apply), Project(directory.FullPath),
+            Source(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(OperationOutcome.Rejected, result.Outcome);
+        Assert.Equal(errorCode, result.ErrorCode);
+        Assert.Single(builder.Calls);
+        Assert.Empty(deployments.Calls);
+    }
+
+    [Fact]
+    public async Task Apply_ChangedExpectedTarget_RejectsBeforeBuildOrDeployment()
+    {
+        using var directory = new TestDirectory();
+        Directory.CreateDirectory(Path.Combine(directory.FullPath, ".git"));
+        var builder = new RecordingBuilder(directory.FullPath);
+        var deployments = new RecordingDeploymentExecutor();
+        var service = CreateService(directory.FullPath, new FakeGitRunner(), builder, deployments);
+        var request = Request(GitUpdateAction.Apply) with { ExpectedRemoteCommit = CurrentCommit };
+
+        var result = await service.ExecuteAsync(request, Project(directory.FullPath), Source(), TestContext.Current.CancellationToken);
+
+        Assert.Equal("git_plan_changed", result.ErrorCode);
+        Assert.Empty(builder.Calls);
+        Assert.Empty(deployments.Calls);
+    }
+
     private static GitBuildReleaseService CreateService(
         string projectRoot,
         IGitCommandRunner runner,
@@ -234,6 +272,8 @@ public sealed class GitBuildReleaseServiceTests
     private sealed class RecordingBuilder(string root) : IProjectReleaseBuildRunner
     {
         public ConcurrentQueue<BuildCall> Calls { get; } = new();
+        public bool FailBuild { get; init; }
+        public bool WrongRevision { get; init; }
 
         public async Task<ProjectReleaseBuildResult> BuildAsync(
             string sourceRoot,
@@ -245,6 +285,10 @@ public sealed class GitBuildReleaseServiceTests
             CancellationToken cancellationToken)
         {
             Calls.Enqueue(new BuildCall(version, releaseId, sourceRevision));
+            if (FailBuild)
+            {
+                return new ProjectReleaseBuildResult(false, null, null, "injected build failure");
+            }
             var output = Path.Combine(root, "artifact", operationId);
             Directory.CreateDirectory(output);
             var manifest = Path.Combine(output, "release-manifest.json");
@@ -256,7 +300,7 @@ public sealed class GitBuildReleaseServiceTests
                     "projectId": "{{projectId}}",
                     "version": "{{version}}",
                     "releaseId": "{{releaseId}}",
-                    "sourceRevision": "{{sourceRevision}}"
+                    "sourceRevision": "{{(WrongRevision ? CurrentCommit : sourceRevision)}}"
                   }
                 }
                 """,

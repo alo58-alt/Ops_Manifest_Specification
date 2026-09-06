@@ -1,6 +1,6 @@
 # CompanyOps Windows 完整操作手册（傻瓜式 MVP / 试点版）
 
-> 普通首次安装不要从第 4 章逐条复制工程命令。请直接打开仓库根目录的 `三步安装CompanyOps.md`：构建电脑双击生成安装包、复制一个 EXE、服务器双击安装。后续章节只用于工程排障和高级接入。
+> 普通安装或升级请直接打开仓库根目录的 `三步安装CompanyOps.md`：构建电脑生成离线 ZIP，服务器完整解压后运行 `Setup\CompanyOps-Setup.exe`，检测到旧版时选择“升级并启动”。后续章节只用于工程排障和高级接入。
 
 安装器同时承担受控更新的一次性主机授权：勾选“启用受控项目更新”并选择项目父目录后，安装器写入 `EnableMutations` 与 `AllowedProjectInstallRoots`，再随安装或升级重启 CompanyOps。普通操作人员不需要手工修改 JSON 或单独执行服务命令。
 
@@ -42,7 +42,7 @@
 | 防火墙、证书、HTTPS | 未实现 | 由主机现有基线或人工审批流程处理 |
 | 数据库备份与迁移 | 未实现 | 继续使用项目专属备份、迁移和回退方案 |
 | 断电 / Agent 进程崩溃后的自动事务恢复 | 受控异常会回滚，但尚无跨进程持久化激活日志 | 试点窗口先留存旧 ImagePath、pointer 和 InstalledState；异常重启后按审计与真实 SCM 状态人工恢复，不做无人值守发布 |
-| 平台自身升级、卸载 | 安装脚本只支持首次安装 | 不得覆盖安装目录；等待版本化升级器 |
+| 平台自身升级、卸载 | 新版 Setup 已实现旧安装识别、预检、目录切换和失败恢复；`Install-OpsPlatform.ps1` 仍只支持首次安装；没有通用卸载入口 | 升级使用完整新版离线包中的 Setup，沿用原程序/数据目录；不要运行首次安装脚本覆盖旧版，目标主机仍须现场验证 |
 | 多主机集中控制 | 当前阶段明确不需要，不属于生产阻塞项 | 每台主机独立安装一个 Agent 和 Console |
 
 **结论：** 普通运维当前可以安全完成“安装 CompanyOps、保持只读、接入声明、查看状态”。Windows Service（含 NSSM）与 interactiveApp 已共用真实入口切换代码闭环，但项目安装、更新、回滚和启停仍必须先在试点主机完成现场验收，不能只凭自动化测试直接照搬到生产。
@@ -1017,6 +1017,8 @@ pwsh -NoProfile -File (Join-Path $SpecRepository 'tools\Test-OpsManifest.ps1') $
 保持 `EnableMutations=false`。首次安装项目时 generation 使用 `0`。执行 Plan 前先由主机管理员在 Agent 配置中填写 `AllowedProjectInstallRoots`；每个 `roots.install` 必须是其中一个父目录下的独立项目子目录，不能直接等于共享父目录或盘符根目录，不同项目目录也不能相同或互相嵌套。使用 `gitBuildRelease` 时，`roots.source` 也必须位于该受控父目录下，并与 `roots.install` 彼此独立；可用一个共同父目录（例如 `D:\CompanyOps`）容纳 `Sources` 和 `Projects` 两棵子目录。
 
 ### 11.1 Console 图形页面（普通运维优先）
+
+项目开发者首次落实 Git 构建发布时，先完成[通用项目流程与 WebQuizBot 试点经验](project-onboarding-standard.md#24-git-构建发布的项目复用流程)。其中的 `Test-ProjectReleaseRehearsal.ps1` 是开发机隔离事务演练工具，不能作为生产服务或数据库迁移已验收的依据。
 
 项目声明为 `gitBuildRelease` 时：
 

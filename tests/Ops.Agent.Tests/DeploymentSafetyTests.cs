@@ -126,6 +126,40 @@ public sealed class DeploymentSafetyTests
     }
 
     [Fact]
+    public async Task PortRegistry_FailedUpdateKeepsActiveOwnershipAndReleasesOnlyNewPorts()
+    {
+        using var directory = new TestDirectory();
+        var store = CreatePortStore(directory.FullPath);
+        await store.InitializeAsync(CancellationToken.None);
+        Assert.True((await store.ReserveAsync([Reservation("127.0.0.1", 9201, "project-a", "install")], CancellationToken.None)).Success);
+        await store.CommitOperationAsync("install", CancellationToken.None);
+
+        Assert.True((await store.ReserveAsync([
+            Reservation("127.0.0.1", 9201, "project-a", "update"),
+            Reservation("127.0.0.1", 9202, "project-a", "update")], CancellationToken.None)).Success);
+        await store.ReleaseOperationAsync("update", CancellationToken.None);
+
+        Assert.False((await store.ReserveAsync([Reservation("127.0.0.1", 9201, "project-b", "compete")], CancellationToken.None)).Success);
+        Assert.True((await store.ReserveAsync([Reservation("127.0.0.1", 9202, "project-b", "free")], CancellationToken.None)).Success);
+    }
+
+    [Fact]
+    public async Task PortRegistry_PendingReservationCannotBeStolenBySameOwnerOperation()
+    {
+        using var directory = new TestDirectory();
+        var store = CreatePortStore(directory.FullPath);
+        await store.InitializeAsync(CancellationToken.None);
+        var reservation = Reservation("127.0.0.1", 9201, "project-a", "first");
+        Assert.True((await store.ReserveAsync([reservation], CancellationToken.None)).Success);
+        Assert.True((await store.ReserveAsync([reservation], CancellationToken.None)).Success);
+        Assert.False((await store.ReserveAsync([reservation with { OperationId = "second" }], CancellationToken.None)).Success);
+        await store.ReleaseOperationAsync("second", CancellationToken.None);
+        Assert.False((await store.ReserveAsync([Reservation("127.0.0.1", 9201, "project-b", "compete")], CancellationToken.None)).Success);
+        await store.ReleaseOperationAsync("first", CancellationToken.None);
+        Assert.True((await store.ReserveAsync([Reservation("127.0.0.1", 9201, "project-b", "free")], CancellationToken.None)).Success);
+    }
+
+    [Fact]
     public async Task DeploymentEngine_StagesCommitsPointerStateAndPortsInTempRoot()
     {
         using var directory = new TestDirectory();

@@ -76,6 +76,51 @@ L3 有三条互斥路径：
 
 日常操作从 Console“项目与组件”中的更新入口进入。`gitBuildRelease` 项目点击“检查更新”读取远端标签和变更，再点击“构建并更新”；不需要 FTP、共享目录、复制 ZIP 或手工解压。其他项目在“更新项目”中选择同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行，Plan、Install、Update 和 SHA-256 不要求日常操作人员手工选择或计算。
 
+### 2.4 Git 构建发布的项目复用流程
+
+本节是项目开发者落实 `gitBuildRelease` 的通用入口。发布人员的 Console 操作见[完整操作手册 11.1](complete-operations-manual.md#111-console-图形页面普通运维优先)。新项目复用同一契约和发布事务，不复制 WebQuizBot 的端口、原生服务名称、浏览器依赖或业务数据。
+
+1. **发布前固定源码。** 在项目自己的独立仓库准备代码和受版本控制的产物，完成相关验证，再由有权限的发布者提交并发布目标分支和唯一 `v<SemVer>` 标签。当前实现选择的是声明分支的远端 HEAD，该提交没有标签时会拒绝，不会自动退回最近一个旧标签。Git push 完成只证明远端代码可取得。
+2. **在干净 clone 复现构建。** 固定项目所需 SDK、Python 虚拟环境、前端依赖与网络策略。对会进入载荷或参与哈希的文本/构建文件明确 `.gitattributes`，使 Windows checkout 不改变预期字节。被跟踪的前端产物必须和源码同步；不能删除“构建后工作树必须干净”的门禁来放行旧产物。不要把 `node_modules`、虚拟环境、账号库或认证状态复制进发布包。
+3. **实现固定构建约定。** `tools/Build-CompanyOpsRelease.ps1` 接收 `Version`、`ReleaseId`、`OpsSpecificationRoot`、`OutputDirectory`，核对 `COMPANYOPS_EXPECTED_SOURCE_REVISION` 与实际 HEAD，生成完整组件载荷及 `release-manifest.json`。Manifest 中的项目、版本、ReleaseId、sourceRevision 与实际构建一致，ProjectManifest 哈希与主机已接入声明的字节一致。脚本仅构建，不启动业务进程或控制服务。
+4. **发布前跑隔离事务演练。** 使用下方通用命令把实际 ZIP 接入真实部署引擎，验证失败路径。每次输出到新的独立目录，保留输入哈希、步骤和审计；演练标签/提交只在隔离仓库使用，不冒充已发布版本。
+5. **现场完成绑定和验收。** 在明确的目标主机上核对独立的 source/install 目录、既有原生资源、持久数据根、只读仓库凭据与操作权限。ProjectManifest 变化时先按现有重新接入规则同步声明；仅字节或换行变化也可能触发哈希不一致，不能绕过校验。之后由有权限的操作者在 Console 执行“检查更新 → 构建并更新”，记录安装版本、原生入口、健康和一次真实业务操作；需要交互进程的项目另核对登录会话。数据库回滚与断电恢复必须单独验收。
+
+开发机在本规范仓库执行（需预先具备本仓库的 .NET SDK/NuGet 依赖，脚本不安装系统依赖）：
+
+```powershell
+$ProjectManifest = (Read-Host '请输入构建对应的 ProjectManifest 绝对路径').Trim()
+$ReleaseManifest = (Read-Host '请输入实际发布目录中 release-manifest.json 的绝对路径').Trim()
+pwsh -NoProfile -File .\tools\Test-ProjectReleaseRehearsal.ps1 `
+  -ProjectManifestPath $ProjectManifest `
+  -ReleaseManifestPath $ReleaseManifest
+```
+
+此工具只支持当前具有激活实现的 `windowsService` / `interactiveApp` 组合。输入声明和制品只读；它在 `artifacts/release-rehearsals/<运行 ID>` 建立临时主机绑定、安装目录、持久数据哨兵与隔离 SQLite，不连接 Agent、不注册服务、不启动发布包中的 EXE、不访问业务端口。生产部署引擎、原生激活编排、ZIP 解包、Schema、SHA-256、pointer、InstalledState、端口登记和审计使用真实实现，原生控制与健康探针使用假适配器。
+
+默认从候选包的**同一载荷**衍生 `0.0.0-rehearsal.baseline`，因此证明的是部署事务，不证明两个业务版本之间的数据兼容。可通过 `-BaselineReleaseManifestPath` 传入另一个真实基线包（须匹配同一 ProjectManifest 契约），通过 `-OutputDirectory` 指定不存在的输出目录。报告 `rehearsal-result.json` 显式记录是否衍生基线；每次演练覆盖：
+
+| 检查 | 通过标准 |
+|---|---|
+| Plan 与首次 Install | Plan 不执行控制；安装后生成不可变 release，generation 为 1 |
+| 篡改制品哈希 | 拒绝候选包，不切换入口或 pointer |
+| 候选版本健康探针异常 | 恢复全部原入口及运行状态；旧 pointer、InstalledState 字节不变；失败目录隔离 |
+| 更新失败的端口归属 | 旧版有效登记仍阻止其他项目占用，不随失败预留一起删除 |
+| Update 与幂等重放 | 更新后 generation 为 2；同一请求重放不再次启停 |
+| 显式 Rollback | 回到基线入口，generation 为 3；数据哨兵不变；审计可追溯 |
+
+#### WebQuizBot 试点经验（2026-09-06）
+
+本轮实际生成 `3.0.4-rehearsal.20260906` 的 API + BrowserHost 发布包并完成上述隔离演练。源码 revision 为隔离 clone 的 `78d9a4df937e133a4cf8161af61686d0cb7e43fe`，不是用户仓库的正式发布提交；ZIP 为 97,506,055 字节，SHA-256 为 `f4889d85b74736403b333363e64b3a76e62e71194c4a7a0218bfce193deb98e1`。本机证据保留在 `artifacts/release-rehearsals/webquizbot-20260906/rehearsal-result.json`（忽略产物，不进入 Git）。项目侧构建命令及包内容证据维护在 WebQuizBot 的 `ops/README.md`。
+
+本次发现并落实三条可复用经验：
+
+- 真实远端源码第一次构建被工作树门禁拒绝，暴露出前端源码变更没有同步受跟踪的 `dist`。发布者应在提交前同步产物，且在全新 clone 再验证一次，不能靠开发机已有产物判断可发布。
+- Windows `core.autocrlf` 会改变构建输入或产物字节。项目用 `.gitattributes` 固定前端源码 LF，并让受跟踪 `dist` 不作文本换行转换；发布一致性需要验证 checkout 后的实际字节。
+- 故障注入重现了“旧版入口已恢复，但旧端口登记被删除”的缺陷。CompanyOps 已修复：更新预留保留同一归属的 active 登记，失败仅释放本次新 reserved 记录；另一操作也不能劫持同一归属的未完成预留。回滚验收应同时查入口、pointer、InstalledState、端口和审计。
+
+本轮未执行真实 SCM / 登录会话切换、生产数据库备份恢复、Agent 崩溃恢复或外部业务验收；隔离演练和构建通过不提升为生产验收通过。
+
 ## 3. 谁负责生成什么
 
 | 材料 | 生成者 | 是否提交项目仓库 | 内容 |

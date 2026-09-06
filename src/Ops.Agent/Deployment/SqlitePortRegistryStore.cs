@@ -58,7 +58,7 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
             query.Transaction = transaction;
             query.CommandText =
                 """
-                SELECT address, project_id, environment, component_id, port_id
+                SELECT address, project_id, environment, component_id, port_id, state, operation_id
                 FROM port_reservations
                 WHERE protocol = $protocol AND port = $port AND state IN ('reserved', 'active');
                 """;
@@ -73,7 +73,9 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
                     string.Equals(reader.GetString(2), request.Environment, StringComparison.Ordinal) &&
                     string.Equals(reader.GetString(3), request.ComponentId, StringComparison.Ordinal) &&
                     string.Equals(reader.GetString(4), request.PortId, StringComparison.Ordinal);
-                if (AddressesOverlap(address, request.Address) && !sameOwner)
+                var anotherReservation = reader.GetString(5) == "reserved" &&
+                    !string.Equals(reader.GetString(6), request.OperationId, StringComparison.Ordinal);
+                if (AddressesOverlap(address, request.Address) && (!sameOwner || anotherReservation))
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     return new PortReservationResult(
@@ -85,6 +87,8 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
             }
 
             await reader.DisposeAsync();
+            // An active row belongs to the still-running release. Keep it active so that
+            // releasing a failed update cannot erase the previous release's ownership.
             await using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText =
@@ -96,9 +100,11 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
                     $protocol, $address, $port, $project_id, $environment,
                     $component_id, $port_id, $operation_id, 'reserved', $reserved_at)
                 ON CONFLICT(protocol, address, port) DO UPDATE SET
-                    operation_id = excluded.operation_id,
-                    state = 'reserved',
-                    reserved_at = excluded.reserved_at
+                    operation_id = CASE WHEN port_reservations.state = 'active'
+                        THEN port_reservations.operation_id ELSE excluded.operation_id END,
+                    state = CASE WHEN port_reservations.state = 'active' THEN 'active' ELSE 'reserved' END,
+                    reserved_at = CASE WHEN port_reservations.state = 'active'
+                        THEN port_reservations.reserved_at ELSE excluded.reserved_at END
                 WHERE project_id = excluded.project_id
                   AND environment = excluded.environment
                   AND component_id = excluded.component_id
