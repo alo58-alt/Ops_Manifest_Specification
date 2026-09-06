@@ -15,6 +15,17 @@ function Assert-Rejected([scriptblock]$Action, [string]$Name) {
     Assert-PrebuiltTest $failed ("Expected rejection: " + $Name)
 }
 try {
+    [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
+    foreach ($expectedExit in @(0, 7)) {
+        $stub = Join-Path $fixtureRoot ('exit-' + $expectedExit + '.ps1')
+        [IO.File]::WriteAllText($stub, ('Write-Output "INERT-PROCESS"; Start-Sleep -Milliseconds 100; exit ' + $expectedExit))
+        $outputPath = Join-Path $fixtureRoot ('exit-' + $expectedExit + '.out')
+        $errorPath = Join-Path $fixtureRoot ('exit-' + $expectedExit + '.err')
+        $child = Start-Process -FilePath (Get-Command pwsh.exe).Source -ArgumentList ('-NoProfile -File "' + $stub + '"') `
+            -WindowStyle Hidden -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -PassThru
+        try { Assert-PrebuiltTest ((Wait-CompanyOpsProcess $child 15000) -eq $expectedExit) 'The real child exit code was lost' }
+        finally { $child.Dispose() }
+    }
     [IO.Directory]::CreateDirectory((Join-Path $sourceFixture 'Setup')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $sourceFixture 'Payload\Agent')) | Out-Null
     [IO.File]::Copy($AssemblyPath, (Join-Path $sourceFixture 'Payload\Agent\CompanyOps.Agent.dll'))

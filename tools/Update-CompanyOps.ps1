@@ -5,6 +5,18 @@ param([string]$FeedRoot, [switch]$CheckOnly, [switch]$Unattended, [switch]$Apply
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($MyInvocation.InvocationName -ne '.') { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) }
+
+function Wait-CompanyOpsProcess {
+    param([Diagnostics.Process]$Process, [int]$TimeoutMilliseconds)
+    # Windows PowerShell 5.1 may lose ExitCode after WaitForExit unless the native handle is retained first.
+    $null = $Process.Handle
+    if (-not $Process.WaitForExit($TimeoutMilliseconds)) { throw '进程尚未结束，请查询现有日志；不要重复执行。' }
+    $Process.Refresh()
+    $exitCode = $Process.ExitCode
+    if ($null -eq $exitCode) { throw '无法读取安装器退出码，不能确认升级结果。' }
+    return $exitCode
+}
 
 function Assert-CompanyOpsOrdinaryPath {
     param([string]$Path)
@@ -78,8 +90,8 @@ function Start-CompanyOpsPrebuiltUpgrade {
     # The selected installer is interactive and requests its own Windows permission prompt.
     $process = Start-Process -FilePath $SetupPath -ArgumentList '--upgrade-only' -WorkingDirectory (Split-Path -Parent $SetupPath) -PassThru
     try {
-        if (-not $process.WaitForExit(3600000)) { throw '升级窗口尚未关闭，请在现有窗口完成或取消；不要重复启动。' }
-        if ($process.ExitCode -ne 0) { throw "安装器未完成升级，退出码：$($process.ExitCode)" }
+        $exitCode = Wait-CompanyOpsProcess $process 3600000
+        if ($exitCode -ne 0) { throw "安装器未完成升级，退出码：$exitCode" }
     } finally { $process.Dispose() }
 }
 
@@ -107,9 +119,7 @@ function Invoke-CompanyOpsPrebuiltUpdate {
         $process = Start-Process -FilePath $package.SetupPath -ArgumentList $arguments -WorkingDirectory (Split-Path -Parent $package.SetupPath) `
             -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
         try {
-            if (-not $process.WaitForExit(900000)) { throw "升级进程尚未结束；不要重复执行，请查询 $stderr" }
-            $process.Refresh()
-            $exitCode = $process.ExitCode
+            $exitCode = Wait-CompanyOpsProcess $process 900000
             $details = [IO.File]::ReadAllText($stderr)
             if ($details) { Write-Host $details }
             if ($exitCode -ne 0) { throw "命令行升级失败，退出码 $exitCode；日志：$stderr" }
