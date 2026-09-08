@@ -37,6 +37,8 @@ flowchart LR
 
 ## 开发验证
 
+以下是完整候选验证与首次依赖准备的命令导航，不是每次修改的固定步骤。先按根 `AGENTS.md` 选择相关工程、测试节点或前端范围；依赖安装只在实际需要时执行，纯 Markdown 只检查内容、路径和差异。当前任务未包含发布时不运行后文打包或现场安装流程。
+
 ```powershell
 # 先在 PowerShell 中进入本仓库根目录，再执行：
 dotnet restore .\OpsManifest.slnx --configfile .\NuGet.config
