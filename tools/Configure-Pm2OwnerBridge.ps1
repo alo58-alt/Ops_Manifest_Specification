@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ExpectedOwnerSid = '',
     [string]$ExpectedOwnerAccount = ''

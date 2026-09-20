@@ -13,6 +13,51 @@ public sealed class ProjectReleaseBuildRunnerTests
     [InlineData(936)]
     [InlineData(1252)]
     [InlineData(65001)]
+    public async Task PackagedPm2OwnerConfigurator_DecodesAndParsesInWindowsPowerShell(int codePage)
+    {
+        const string probe = """
+            $ErrorActionPreference = 'Stop'
+            $path = $env:COMPANYOPS_TEST_SCRIPT_PATH
+            $bytes = [IO.File]::ReadAllBytes($path)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+                throw 'PM2 owner configurator must be UTF-8 with BOM.'
+            }
+            $fallback = [Text.Encoding]::GetEncoding([int]$env:COMPANYOPS_TEST_ANSI_CODE_PAGE)
+            $reader = [IO.StreamReader]::new($path, $fallback, $true)
+            try { $scriptText = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            $tokens = $null
+            $parseErrors = $null
+            $null = [Management.Automation.Language.Parser]::ParseInput($scriptText, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+            Write-Output 'PM2-CONFIGURATOR-DECODE-AND-PARSE-PASSED'
+            """;
+        var startInfo = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,
+            "WindowsPowerShell", "v1.0", "powershell.exe"))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                     Convert.ToBase64String(Encoding.Unicode.GetBytes(probe)) })
+            startInfo.ArgumentList.Add(argument);
+        startInfo.Environment["COMPANYOPS_TEST_SCRIPT_PATH"] = Path.Combine(
+            AppContext.BaseDirectory, "Configure-Pm2OwnerBridge.ps1");
+        startInfo.Environment["COMPANYOPS_TEST_ANSI_CODE_PAGE"] = codePage.ToString();
+        using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var stderr = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        var detail = await stdout + await stderr;
+        Assert.True(process.ExitCode == 0, detail);
+        Assert.Contains("PM2-CONFIGURATOR-DECODE-AND-PARSE-PASSED", detail);
+    }
+
+    [Theory]
+    [InlineData(936)]
+    [InlineData(1252)]
+    [InlineData(65001)]
     public async Task PackagedHelper_DecodesAndParsesInWindowsPowerShell_RegardlessOfAnsiCodePage(int codePage)
     {
         // Exercise the Windows PowerShell parser with its BOM-aware file loading semantics.
