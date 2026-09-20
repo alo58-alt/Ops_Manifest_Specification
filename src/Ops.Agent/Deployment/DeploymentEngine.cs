@@ -143,7 +143,9 @@ public sealed class DeploymentEngine(
             context.ReleasePath,
             context.ProjectManifest,
             context.ReleaseManifest,
-            context.Binding);
+            context.Binding,
+            request.Action == DeploymentAction.Install ||
+            request.Action == DeploymentAction.Plan && context.CurrentVersion is null);
         var activationPlan = await activator.PlanAsync(activationRequest, cancellationToken);
         if (!activationPlan.Success)
         {
@@ -265,11 +267,11 @@ public sealed class DeploymentEngine(
                     return "失败 release 已隔离";
                 }));
             recoveryDetails.Add(await RunRecoveryStepAsync(
-                "端口预留释放",
+                "端口事务恢复",
                 async () =>
                 {
-                    await portRegistry.ReleaseOperationAsync(request.OperationId, cleanupToken);
-                    return "端口预留已释放";
+                    await portRegistry.RollbackOperationAsync(request.OperationId, cleanupToken);
+                    return "本操作新增的 reserved/active 端口记录已回滚；旧 active 记录保留";
                 }));
             steps.AddRange(recoveryDetails);
             var result = Reject(
@@ -382,7 +384,8 @@ public sealed class DeploymentEngine(
             previousPath,
             previousProjectManifest,
             previousManifest,
-            binding);
+            binding,
+            false);
         var activationPlan = await activator.PlanAsync(activationRequest, cancellationToken);
         if (!activationPlan.Success)
         {

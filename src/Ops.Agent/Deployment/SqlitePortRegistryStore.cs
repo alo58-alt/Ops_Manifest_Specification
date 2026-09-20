@@ -1,5 +1,7 @@
 using CompanyOps.Contracts;
 using Microsoft.Data.Sqlite;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace CompanyOps.Agent.Deployment;
 
@@ -29,6 +31,20 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
             );
             CREATE INDEX IF NOT EXISTS ix_port_reservations_operation
             ON port_reservations(operation_id);
+            CREATE TABLE IF NOT EXISTS port_reservation_operations (
+                operation_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO port_reservation_operations(operation_id, state, request_fingerprint, created_at)
+            SELECT operation_id,
+                   CASE WHEN MAX(CASE WHEN state = 'active' THEN 1 ELSE 0 END) = 1
+                        THEN 'committed' ELSE 'reserved' END,
+                   'legacy/' || operation_id,
+                   MIN(reserved_at)
+            FROM port_reservations
+            GROUP BY operation_id;
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -52,6 +68,41 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
         await using var transaction = connection.BeginTransaction(
             System.Data.IsolationLevel.Serializable,
             deferred: false);
+        var operationId = requests[0].OperationId;
+        var requestFingerprint = RequestFingerprint(requests);
+        await using (var register = connection.CreateCommand())
+        {
+            register.Transaction = transaction;
+            register.CommandText =
+                """
+                INSERT INTO port_reservation_operations(operation_id, state, request_fingerprint, created_at)
+                VALUES($operation_id, 'reserved', $request_fingerprint, $created_at)
+                ON CONFLICT(operation_id) DO NOTHING;
+                """;
+            register.Parameters.AddWithValue("$operation_id", operationId);
+            register.Parameters.AddWithValue("$request_fingerprint", requestFingerprint);
+            register.Parameters.AddWithValue("$created_at", DateTimeOffset.UtcNow.ToString("O"));
+            if (await register.ExecuteNonQueryAsync(cancellationToken) == 0)
+            {
+                await using var stateQuery = connection.CreateCommand();
+                stateQuery.Transaction = transaction;
+                stateQuery.CommandText =
+                    "SELECT state, request_fingerprint FROM port_reservation_operations WHERE operation_id = $operation_id;";
+                stateQuery.Parameters.AddWithValue("$operation_id", operationId);
+                await using var stateReader = await stateQuery.ExecuteReaderAsync(cancellationToken);
+                if (!await stateReader.ReadAsync(cancellationToken) ||
+                    stateReader.GetString(0) != "reserved" ||
+                    !string.Equals(stateReader.GetString(1), requestFingerprint, StringComparison.Ordinal))
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return new PortReservationResult(
+                        false,
+                        [],
+                        "operation_id_reused",
+                        "操作 ID 已经完成或释放，不允许复用");
+                }
+            }
+        }
         foreach (var request in requests)
         {
             await using var query = connection.CreateCommand();
@@ -126,19 +177,79 @@ public sealed class SqlitePortRegistryStore(OpsPathResolver pathResolver) : IPor
     public async Task ReleaseOperationAsync(string operationId, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(
+            System.Data.IsolationLevel.Serializable,
+            deferred: false);
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "DELETE FROM port_reservations WHERE operation_id = $operation_id AND state = 'reserved';";
         command.Parameters.AddWithValue("$operation_id", operationId);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await SetOperationStateAsync(connection, transaction, operationId, "released", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task CommitOperationAsync(string operationId, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(
+            System.Data.IsolationLevel.Serializable,
+            deferred: false);
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "UPDATE port_reservations SET state = 'active' WHERE operation_id = $operation_id AND state = 'reserved';";
         command.Parameters.AddWithValue("$operation_id", operationId);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await SetOperationStateAsync(connection, transaction, operationId, "committed", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task RollbackOperationAsync(string operationId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction(
+            System.Data.IsolationLevel.Serializable,
+            deferred: false);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // Existing active ownership keeps its original operation_id during ReserveAsync. This
+        // therefore removes only rows introduced by the failed operation, even after commit.
+        command.CommandText = "DELETE FROM port_reservations WHERE operation_id = $operation_id;";
+        command.Parameters.AddWithValue("$operation_id", operationId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await SetOperationStateAsync(connection, transaction, operationId, "rolled_back", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task SetOperationStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string operationId,
+        string state,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "UPDATE port_reservation_operations SET state = $state WHERE operation_id = $operation_id;";
+        command.Parameters.AddWithValue("$state", state);
+        command.Parameters.AddWithValue("$operation_id", operationId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static string RequestFingerprint(IReadOnlyList<PortReservationRequest> requests)
+    {
+        var canonical = string.Join('\n', requests
+            .Select(request => string.Join('\u001f',
+                request.Protocol.ToLowerInvariant(),
+                request.Address,
+                request.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                request.ProjectId,
+                request.Environment,
+                request.ComponentId,
+                request.PortId))
+            .OrderBy(static value => value, StringComparer.Ordinal));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
     private static string? ValidateBatch(IReadOnlyList<PortReservationRequest> requests)

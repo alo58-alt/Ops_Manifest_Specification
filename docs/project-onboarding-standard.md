@@ -75,7 +75,7 @@ L3 默认使用开发机或 CI 生成的预编译包：构建完成后自动传�
 
 接入向导中的端口解析顺序为：操作者明确填写的新端口、当前主机既有 EnvironmentBinding 实际端口、ProjectManifest 的 `preferredPort`。界面默认只展示解析结果，不要求重复填写；“指定新端口”留空表示沿用，只有操作者输入新值才形成端口变更计划。
 
-`ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环。`pm2Legacy` 只有在 typed PM2 载荷、owner 新鲜快照、精确单项迁移和失败恢复全部通过时才可进入 L3；隔离自动化不能替代共享 PM2 daemon 的现场验收。IIS、静态站点和计划任务在没有对应现场验收前不获得 L3 更新权限。
+`ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。Windows Service 已支持两条明确路径：既有服务（含 NSSM 承载）只切换不可变 release 入口；首次 `Install` 只允许使用 `local-system|local-service|network-service` 内置账户引用创建精确 SCM 服务，创建后回读配置、按依赖启动和健康检查，失败时仅删除本事务创建项。`interactiveApp` 继续通过 SessionAgent 在绑定用户会话中登记和启动；混合项目必须先通过服务依赖健康，不能把交互组件放入 Session 0。`pm2Legacy` 只有在 typed PM2 载荷、owner 新鲜快照、精确单项迁移和失败恢复全部通过时才可进入 L3；隔离自动化不能替代共享 PM2 daemon 或真实 SCM 的现场验收。IIS、静态站点和计划任务在没有对应现场验收前不获得 L3 更新权限。
 
 日常操作从 Console“项目与组件”中的更新入口进入，在“更新项目”中选择已由开发端发布、同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。SSH 运维可调用本机 `companyops.exe deploy --data-file <请求 JSON>`，先 Plan，再携带当前 generation 与唯一幂等键执行 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行。仅明确启用 `gitBuildRelease` 的项目使用“检查更新 → 构建并更新”。
 

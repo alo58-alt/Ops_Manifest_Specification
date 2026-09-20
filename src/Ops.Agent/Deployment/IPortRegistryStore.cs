@@ -12,5 +12,7 @@ public interface IPortRegistryStore
 
     Task ReleaseOperationAsync(string operationId, CancellationToken cancellationToken);
 
+    Task RollbackOperationAsync(string operationId, CancellationToken cancellationToken);
+
     Task CommitOperationAsync(string operationId, CancellationToken cancellationToken);
 }

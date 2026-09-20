@@ -161,6 +161,56 @@ public sealed class DeploymentSafetyTests
     }
 
     [Fact]
+    public async Task PortRegistry_RollbackAfterCommitRemovesOnlyCurrentOperationRows()
+    {
+        using var directory = new TestDirectory();
+        var store = CreatePortStore(directory.FullPath);
+        await store.InitializeAsync(CancellationToken.None);
+        Assert.True((await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9201, "project-a", "install")],
+            CancellationToken.None)).Success);
+        await store.CommitOperationAsync("install", CancellationToken.None);
+
+        Assert.True((await store.ReserveAsync(
+            [
+                Reservation("127.0.0.1", 9201, "project-a", "update"),
+                Reservation("127.0.0.1", 9202, "project-a", "update")
+            ],
+            CancellationToken.None)).Success);
+        await store.CommitOperationAsync("update", CancellationToken.None);
+        await store.RollbackOperationAsync("update", CancellationToken.None);
+
+        Assert.False((await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9201, "project-b", "compete")],
+            CancellationToken.None)).Success);
+        Assert.True((await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9202, "project-b", "free")],
+            CancellationToken.None)).Success);
+    }
+
+    [Fact]
+    public async Task PortRegistry_CommittedOperationIdCannotBeReusedOrRollbackHistoricalOwnership()
+    {
+        using var directory = new TestDirectory();
+        var store = CreatePortStore(directory.FullPath);
+        await store.InitializeAsync(CancellationToken.None);
+        Assert.True((await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9201, "project-a", "install")],
+            CancellationToken.None)).Success);
+        await store.CommitOperationAsync("install", CancellationToken.None);
+
+        var reused = await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9202, "project-a", "install")],
+            CancellationToken.None);
+
+        Assert.False(reused.Success);
+        Assert.Equal("operation_id_reused", reused.ErrorCode);
+        Assert.False((await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9201, "project-b", "compete")],
+            CancellationToken.None)).Success);
+    }
+
+    [Fact]
     public async Task PortRegistry_PendingReservationCannotBeStolenBySameOwnerOperation()
     {
         using var directory = new TestDirectory();
@@ -169,6 +219,11 @@ public sealed class DeploymentSafetyTests
         var reservation = Reservation("127.0.0.1", 9201, "project-a", "first");
         Assert.True((await store.ReserveAsync([reservation], CancellationToken.None)).Success);
         Assert.True((await store.ReserveAsync([reservation], CancellationToken.None)).Success);
+        var mismatchedReplay = await store.ReserveAsync(
+            [Reservation("127.0.0.1", 9202, "project-a", "first")],
+            CancellationToken.None);
+        Assert.False(mismatchedReplay.Success);
+        Assert.Equal("operation_id_reused", mismatchedReplay.ErrorCode);
         Assert.False((await store.ReserveAsync([reservation with { OperationId = "second" }], CancellationToken.None)).Success);
         await store.ReleaseOperationAsync("second", CancellationToken.None);
         Assert.False((await store.ReserveAsync([Reservation("127.0.0.1", 9201, "project-b", "compete")], CancellationToken.None)).Success);

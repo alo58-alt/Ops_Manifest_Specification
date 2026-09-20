@@ -65,6 +65,7 @@ builder.Services.AddSingleton<IManifestHealthGate>(
 builder.Services.AddSingleton<ArtifactPackageValidator>();
 builder.Services.AddSingleton<SafeZipExtractor>();
 builder.Services.AddSingleton<IPortRegistryStore, SqlitePortRegistryStore>();
+builder.Services.AddSingleton<IWindowsServiceManager, NativeWindowsServiceManager>();
 builder.Services.AddSingleton<IDeploymentEntrypointAdapter, WindowsServiceDeploymentEntrypointAdapter>();
 builder.Services.AddSingleton<IDeploymentActivator, NativeDeploymentActivator>();
 builder.Services.AddSingleton<DeploymentEngine>();

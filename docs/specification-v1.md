@@ -70,6 +70,8 @@ pm2 jlist。快照只能包含归属判定需要的有限字段，不能复制�
 
 EnvironmentBinding 只保存非敏感绑定：主机 ID、环境名、安装/数据/日志根目录、服务账户引用、端口分配、路由和配置值。敏感配置只能使用 `secretRef`，禁止同时出现明文 `value`。
 
+Windows Service 首次 `Install` 只把 `serviceAccountRef=local-system|local-service|network-service` 解析为三个 Windows 内置账户；不创建本机用户、不接受密码，也不把任意账户名当作引用执行。新服务的精确名称来自 `nativeName`，显示名、启动模式、恢复重启次数和项目内服务依赖来自 ProjectManifest，ImagePath 与 argv 来自已校验 ReleaseManifest。`Plan` 必须确认同名服务不存在且所有字段可解析；创建时 Agent 生成不可由请求指定的随机 SCM 描述标记，创建后连同核心配置逐项回读，再按项目依赖顺序启动并通过声明式健康探针。失败恢复只停止并删除本事务已尝试创建、标记和核心配置仍精确匹配的服务；身份发生变化时失败关闭。已有服务的 `Update`/`Rollback` 不补建、不删除，只切换不可变 release 入口并在失败时恢复旧入口和旧运行状态。目录 ACL 仍须由受审主机流程预置，当前部署事务不会隐式扩权。
+
 实际路径必须是绝对 Windows 路径。`roots.source` 只用于 `gitBuildRelease` 的独立源码工作树。正式 Agent 还必须进一步验证源码与安装路径位于管理员允许的项目父目录下，且源码/安装根彼此独立；Schema 只完成格式层约束，不能替代 ACL 和规范化路径校验。
 
 ## 6. InstalledState

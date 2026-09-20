@@ -823,15 +823,18 @@ Get-Content -Raw -LiteralPath $EnvironmentBinding
 - 每个端口只分配给一个项目组件；
 - Secret 使用 `secretRef`，不使用明文 `value`。
 
-当前 MVP 中这些字段是受控声明，不是自动 provision 指令：
+当前实现只对有限、可回读的 Windows Service 首次安装提供 provision：
 
-- `serviceAccountRef` 不会自动创建 Windows 账号或授予“作为服务登录”；
+- 首次创建服务时，`serviceAccountRef` 仅接受 `local-system`、`local-service`、`network-service` 三个内置账户引用；既有服务接入可继续保留不可执行的现状引用。平台不会创建 Windows 账号、接收密码或授予“作为服务登录”；
+- 首次 `Install` 以 `nativeName` 创建精确服务，ImagePath/argv 来自 ReleaseManifest，显示名、启动模式、恢复次数和项目内 SCM 依赖来自 ProjectManifest；创建后回读并按依赖逐项启动、健康检查；
+- 部分创建、启动或健康失败时，只删除本事务已尝试创建、携带不可预测 `companyops-created/v1/...` SCM 描述标记且核心配置仍精确匹配的服务。未执行创建的后续组件、已有服务、同名无标记服务或身份已变化的服务绝不删除；
+- `Update`/`Rollback` 缺失服务时失败关闭，不会用“删服务重装”替代不可变 release 入口切换；
 - `roots.data` 和 `roots.logs` 不会自动完成目录 ACL；
 - `portBindings` 会参与端口预留，但不会自动改写业务项目配置；
 - `routes` 不会自动创建 DNS、证书、反向代理或防火墙规则；
 - `secretRef` 不会自动解析真实 Secret。
 
-因此项目自己的受审安装流程仍要负责创建账号、目录 ACL、原生资源和非明文运行配置，直到对应 CompanyOps provider 实现并通过现场验收。
+因此项目自己的受审主机流程仍要负责目录 ACL、非内置账户、非明文运行配置及其他原生资源。真实首次安装前必须核对目标名称当前不存在、计划 ImagePath、账户、依赖、启动类型、恢复策略和健康探针；Mock 与隔离测试不能替代 SCM 现场验收。
 
 ### 8.2 端口分配前检查
 

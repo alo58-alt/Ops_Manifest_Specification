@@ -285,6 +285,12 @@ public sealed class DeploymentEngineTransactionTests
             return Task.CompletedTask;
         }
 
+        public Task RollbackOperationAsync(string operationId, CancellationToken cancellationToken)
+        {
+            ReleaseCalled = true;
+            return Task.CompletedTask;
+        }
+
         public Task CommitOperationAsync(string operationId, CancellationToken cancellationToken) =>
             failCommit
                 ? Task.FromException(new IOException("injected port commit failure"))
