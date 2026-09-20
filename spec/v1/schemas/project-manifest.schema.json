@@ -188,6 +188,18 @@
       "maxLength": 260,
       "pattern": "^(?![A-Za-z]:)(?!\\\\\\\\)(?!/)(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
     },
+    "safePm2Script": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/relativePath"
+        },
+        {
+          "not": {
+            "pattern": "(?i)(?:^|[\\\\/])(?:cmd|powershell|pwsh|bash|sh|wscript|cscript)(?:\\.exe)?$|\\.(?:cmd|bat|ps1|psm1|vbs|wsf)$"
+          }
+        }
+      ]
+    },
     "healthProbe": {
       "oneOf": [
         {
@@ -610,7 +622,7 @@
                       "$ref": "#/definitions/relativePath"
                     },
                     "script": {
-                      "$ref": "#/definitions/relativePath"
+                      "$ref": "#/definitions/safePm2Script"
                     }
                   }
                 }

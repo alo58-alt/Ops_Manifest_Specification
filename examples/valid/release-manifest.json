@@ -61,7 +61,14 @@
       "entrypoint": "legacy-worker-main",
       "artifactId": "backend-package",
       "path": "legacy/worker.py",
-      "workingDirectory": "legacy"
+      "workingDirectory": "legacy",
+      "arguments": [],
+      "pm2": {
+        "name": "sample-system-legacy-worker",
+        "cwd": "legacy",
+        "script": "legacy/worker.py",
+        "arguments": []
+      }
     }
   ]
 }

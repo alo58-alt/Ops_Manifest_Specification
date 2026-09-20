@@ -22,8 +22,7 @@ public sealed class ControlServer(
             {
                 await pipe.WaitForConnectionAsync(stoppingToken);
                 var requestBytes = await ReadLineAsync(pipe, stoppingToken);
-                var request = JsonSerializer.Deserialize<Pm2BridgeControlRequest>(requestBytes, jsonOptions);
-                var response = await DispatchAsync(request, stoppingToken);
+                var response = await DispatchPayloadAsync(requestBytes, stoppingToken);
                 await pipe.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(response, jsonOptions), stoppingToken);
                 await pipe.WriteAsync("\n"u8.ToArray(), stoppingToken);
                 await pipe.FlushAsync(stoppingToken);
@@ -39,13 +38,94 @@ public sealed class ControlServer(
         }
     }
 
+    private async Task<object> DispatchPayloadAsync(byte[] requestBytes, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(requestBytes);
+            var protocolVersion = document.RootElement.TryGetProperty("protocolVersion", out var version)
+                ? version.GetString()
+                : null;
+            if (string.Equals(protocolVersion, Pm2BridgeProtocol.MutationVersion, StringComparison.Ordinal))
+            {
+                var mutation = JsonSerializer.Deserialize<Pm2BridgeMutationRequest>(requestBytes, jsonOptions);
+                return await DispatchMutationAsync(mutation, cancellationToken);
+            }
+
+            var control = JsonSerializer.Deserialize<Pm2BridgeControlRequest>(requestBytes, jsonOptions);
+            return await DispatchAsync(control, cancellationToken);
+        }
+        catch (JsonException exception)
+        {
+            return new Pm2BridgeControlResponse(
+                Pm2BridgeProtocol.Version,
+                Guid.CreateVersion7().ToString(),
+                false,
+                "invalid_json",
+                $"控制请求 JSON 无效：{exception.Message}");
+        }
+    }
+
+    private async Task<Pm2BridgeMutationResponse> DispatchMutationAsync(
+        Pm2BridgeMutationRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (request is null || request.ProtocolVersion != Pm2BridgeProtocol.MutationVersion ||
+            string.IsNullOrWhiteSpace(request.RequestId) || request.RequestId.Length > 200 ||
+            !ValidMutationShape(request))
+        {
+            return new(
+                Pm2BridgeProtocol.MutationVersion,
+                request?.RequestId ?? Guid.CreateVersion7().ToString(),
+                false,
+                ErrorCode: "invalid_request",
+                Detail: "PM2 变更请求无效");
+        }
+
+        var result = await runner.MutateAsync(request, cancellationToken);
+        var process = result.Process is null ? null : new Pm2BridgeProcessIdentity(
+            result.Process.PmId,
+            result.Process.Name,
+            result.Process.Cwd,
+            result.Process.Script,
+            result.Process.Arguments);
+        return new(
+            Pm2BridgeProtocol.MutationVersion,
+            request.RequestId,
+            result.Success,
+            process,
+            result.Success ? null : "ownership_or_cli_failed",
+            result.Detail);
+    }
+
+    private static bool ValidMutationShape(Pm2BridgeMutationRequest request) => request.Operation switch
+    {
+        Pm2BridgeMutationAction.Delete => request.ExpectedProcess is
+        {
+            PmId: >= 0,
+            Name.Length: >= 1 and <= 120,
+            Cwd.Length: >= 3 and <= 500,
+            Script.Length: >= 3 and <= 500,
+            Arguments.Count: <= 64
+        } && request.Registration is null,
+        Pm2BridgeMutationAction.Register => request.ExpectedProcess is null && request.Registration is
+        {
+            Name.Length: >= 1 and <= 120,
+            Cwd.Length: >= 3 and <= 500,
+            Script.Length: >= 3 and <= 500,
+            Arguments.Count: <= 64
+        },
+        _ => false
+    };
+
     private async Task<Pm2BridgeControlResponse> DispatchAsync(
         Pm2BridgeControlRequest? request,
         CancellationToken cancellationToken)
     {
         if (request is null || request.ProtocolVersion != Pm2BridgeProtocol.Version ||
             request.PmId < 0 || request.Name.Length is < 1 or > 120 ||
-            request.ExpectedCwd.Length is < 3 or > 500 || request.ExpectedScript.Length is < 3 or > 500)
+            request.ExpectedCwd.Length is < 3 or > 500 || request.ExpectedScript.Length is < 3 or > 500 ||
+            request.ExpectedArguments is { Count: > 64 })
         {
             return new Pm2BridgeControlResponse(
                 Pm2BridgeProtocol.Version,

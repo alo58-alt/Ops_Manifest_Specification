@@ -11,6 +11,8 @@ Windows 上的 PM2 daemon 属于启动它的用户会话。高权限 Agent 直�
 
 Bridge 没有 `all`、`delete`、`kill` 或任意命令字段，代码也不读取、设置或改写 `PM2_HOME`。
 
+L3 发布也不扩大 Bridge 的命令面。ReleaseManifest 只能提供 typed `pm2.name/cwd/script/arguments[]`；禁止 shell 字符串、命令宿主、脚本入口和 Secret 明文。Agent 每次操作都重新读取缩减 owner 快照，按 name + 规范化 cwd + 精确 script 唯一匹配后锁定 pm_id。入口迁移只能删除本次精确匹配的单个旧 pm_id，失败恢复只能删除本次新增且仍精确匹配的单个实例；普通重启不能代替 cwd/script/arguments 切换。
+
 ## 普通运维只做两步
 
 1. 在真实 PM2 owner 登录的桌面上，双击 CompanyOps 程序目录 `Pm2Bridge\配置PM2主机接管.cmd`。它会自动识别当前账号 SID、Node、PM2 CLI、CompanyOps 数据目录，验证当前 daemon，配置 owner 专属 Pipe 和登录任务，并等待发现快照生成。一个 PM2 owner 只做一次；升级会保留配置。

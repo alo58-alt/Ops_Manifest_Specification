@@ -360,6 +360,7 @@ public sealed record OnboardingHealthResult(
 public static class Pm2BridgeProtocol
 {
     public const string Version = "ops-pm2-control/v1";
+    public const string MutationVersion = "ops-pm2-mutation/v1";
 }
 
 public static class Pm2SnapshotProtocol
@@ -388,12 +389,47 @@ public sealed record Pm2BridgeControlRequest(
     string Name,
     string ExpectedCwd,
     string ExpectedScript,
-    ComponentOperationAction Action);
+    ComponentOperationAction Action,
+    IReadOnlyList<string>? ExpectedArguments = null);
 
 public sealed record Pm2BridgeControlResponse(
     string ProtocolVersion,
     string RequestId,
     bool Success,
+    string? ErrorCode = null,
+    string? Detail = null);
+
+public enum Pm2BridgeMutationAction
+{
+    Register,
+    Delete
+}
+
+public sealed record Pm2BridgeProcessIdentity(
+    int PmId,
+    string Name,
+    string Cwd,
+    string Script,
+    IReadOnlyList<string> Arguments);
+
+public sealed record Pm2BridgeRegistration(
+    string Name,
+    string Cwd,
+    string Script,
+    IReadOnlyList<string> Arguments);
+
+public sealed record Pm2BridgeMutationRequest(
+    string ProtocolVersion,
+    string RequestId,
+    Pm2BridgeMutationAction Operation,
+    Pm2BridgeProcessIdentity? ExpectedProcess = null,
+    Pm2BridgeRegistration? Registration = null);
+
+public sealed record Pm2BridgeMutationResponse(
+    string ProtocolVersion,
+    string RequestId,
+    bool Success,
+    Pm2BridgeProcessIdentity? Process = null,
     string? ErrorCode = null,
     string? Detail = null);
 

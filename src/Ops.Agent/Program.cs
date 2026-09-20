@@ -79,6 +79,7 @@ builder.Services.AddSingleton<IGitBuildReleaseService, GitBuildReleaseService>()
 builder.Services.AddSingleton<GitUpdateService>();
 builder.Services.AddSingleton<FixedCommandRunner>();
 builder.Services.AddSingleton<IPm2OwnerControlBridge, NamedPipePm2OwnerControlBridge>();
+builder.Services.AddSingleton<IPm2OwnerMutationBridge, NamedPipePm2OwnerMutationBridge>();
 builder.Services.AddSingleton<IInteractiveSessionControlBridge, NamedPipeInteractiveSessionControlBridge>();
 builder.Services.AddSingleton<IComponentControlAdapter, WindowsServiceControlAdapter>();
 builder.Services.AddSingleton<IComponentControlAdapter, ScheduledTaskControlAdapter>();
@@ -100,6 +101,7 @@ builder.Services.AddSingleton<IInteractiveSessionClaimProvider, InteractiveSessi
 builder.Services.AddSingleton<InteractiveSnapshotReader>();
 builder.Services.AddSingleton<InteractiveEntrypointStateStore>();
 builder.Services.AddSingleton<IDeploymentEntrypointAdapter, InteractiveAppDeploymentEntrypointAdapter>();
+builder.Services.AddSingleton<IDeploymentEntrypointAdapter, Pm2LegacyDeploymentEntrypointAdapter>();
 builder.Services.AddSingleton<NamedPipeSecurityFactory>();
 builder.Services.AddHostedService<AgentWorker>();
 builder.Services.AddHostedService<NamedPipeServer>();

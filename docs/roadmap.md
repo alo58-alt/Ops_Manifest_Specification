@@ -38,12 +38,13 @@ PM2 Agent 不直接执行 `jlist`；只有 owner 用户下的 Bridge 生成缩�
 - ReleaseManifest 目标架构、最低 Agent 版本和 ProjectManifest SHA-256 绑定校验；
 - Windows Service 精确入口预检、反向依赖停止、SCM `ImagePath` 切换、依赖启动、声明式健康复核和失败恢复；
 - pointer、InstalledState 或端口提交失败时恢复旧原生入口、原运行状态和旧状态文件；
+- PM2 typed 载荷、owner 新鲜缩减快照、name/cwd/script/argv 精确单项迁移、真实健康依赖门禁与旧入口恢复；
 - 主机级 Windows Service、IIS site 和任务计划声明冲突检测；
-- IIS、静态站点、任务计划和 PM2 发布激活器缺失时在 `Plan` 阶段失败关闭，不再把 release 目录存在当作发布成功。
+- IIS、静态站点和任务计划发布激活器缺失时在 `Plan` 阶段失败关闭，不再把 release 目录存在当作发布成功。
 
 MVP 不接受项目传入任意迁移脚本。真实数据库迁移、备份提供方和破坏性变更仍属于后续受控能力，不得把文件回滚当作数据库回滚。
 
-自动化使用假入口、假控制适配器和临时状态目录，没有修改本机真实 SCM、NSSM 或用户进程。正式生产写入仍需在试点主机完成 Windows Service + interactiveApp 的 Install、Update、健康失败恢复和 Rollback 现场演练。
+自动化使用假入口、假控制适配器和临时状态目录，没有修改本机真实 SCM、NSSM、PM2 daemon 或用户进程。正式生产写入仍需在试点主机完成对应运行形态的 Install、Update、健康失败恢复和 Rollback 现场演练；PM2 尤其需要证明共享 daemon 中其他项目实例完全不变。
 
 ## M4：Ops Console — 已完成 MVP
 

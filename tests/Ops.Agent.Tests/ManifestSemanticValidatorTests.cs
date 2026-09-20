@@ -45,6 +45,19 @@ public sealed class ManifestSemanticValidatorTests
         Assert.Contains(errors, static error => error.Contains("componentId", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("release-manifest-pm2-identity-mismatch.json", "完全一致")]
+    [InlineData("release-manifest-pm2-secret.json", "Secret 明文")]
+    [InlineData("release-manifest-pm2-shell.json", "命令宿主")]
+    public void UnsafePm2ReleasePayload_FailsClosed(string fileName, string expectedError)
+    {
+        var document = ReadExample("invalid", fileName);
+
+        var errors = ManifestSemanticValidator.Validate("ReleaseManifest", document);
+
+        Assert.Contains(errors, error => error.Contains(expectedError, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void DuplicatePortBinding_FailsClosed()
     {

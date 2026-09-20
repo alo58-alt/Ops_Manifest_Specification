@@ -54,6 +54,8 @@ ProjectManifest 包含：
 
 ReleaseManifest 由构建过程生成，不由现场人工编辑。每个制品至少包含文件名、字节数和 64 位小写 SHA-256。组件载荷只能引用已声明的制品，并给出制品内部相对路径；禁止盘符、UNC 和父目录跳转。
 
+`pm2Legacy` 的组件载荷除通用 `path`、`workingDirectory`、`arguments[]` 外，必须携带 typed `pm2` 对象：`name`、`cwd`、`script` 和 `arguments[]`。`name` 必须与 ProjectManifest 完全一致，`script/cwd/arguments` 必须分别与通用载荷逐项完全一致。字段是结构化 argv，不是 shell 字符串；入口禁止 CMD、PowerShell、sh/bash、WSH 等命令宿主及 `.cmd/.bat/.ps1/.vbs` 等脚本，参数禁止独立 shell 控制符和疑似 Secret 明文。URL 查询串等普通单参数不因包含 `&` 而被误判；执行端始终以参数数组直传，不做 shell 拼接或解释。
+
 `projectManifestSha256` 必须是本次构建所使用 ProjectManifest 原始文件字节的 SHA-256；Agent 会在 `Plan` 阶段与当前唯一声明精确比对。通用激活器只解析 `${ROOT_INSTALL}`、`${ROOT_DATA}`、`${ROOT_LOGS}` 与 `${PORT_<PORT_ID>}`，其中端口 ID 的连字符转换为下划线，例如 `api-http` 对应 `${PORT_API_HTTP}`；未知、Secret 或未绑定占位符失败关闭。Windows Service 的 `workingDirectory` 如存在，只能等于入口文件所在目录，且程序必须把持久数据与版本化入口分离。
 
 `fileHeartbeat.rootRef` 可选为 `install|data|logs`，省略时兼容为 `data`；`path` 始终是所选绑定根目录内的安全相对路径。`interactiveProcess` 必须从当前绑定用户的最新 Session Agent 快照中精确匹配一个 EXE、工作目录和参数，不能仅因控制请求已返回成功而判定健康。

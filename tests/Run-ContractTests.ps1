@@ -104,6 +104,22 @@ Invoke-TestCase -Name '六种项目接入模板均通过 ProjectManifest 契约'
     }
 }
 
+Invoke-TestCase -Name 'PM2 L3 模板使用 typed 载荷且不包含命令宿主或 Secret' -Body {
+    $pm2Manifest = Get-Content -LiteralPath (Join-Path $onboardingTemplates 'pm2-legacy\ops\project-manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    $pm2Recipe = Get-Content -LiteralPath (Join-Path $onboardingTemplates 'pm2-legacy\ops\release-recipe.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    $component = @($pm2Manifest.components)[0]
+    $payload = @($pm2Recipe.componentPayloads)[0]
+    if ($null -eq $payload.pm2 -or
+        [string]$payload.pm2.name -cne [string]$component.pm2.name -or
+        [string]$payload.pm2.cwd -cne [string]$payload.workingDirectory -or
+        [string]$payload.pm2.script -cne [string]$payload.path) {
+        throw 'PM2 L3 模板的 typed identity 不完整或与通用载荷不一致'
+    }
+    if ((Compare-Object @($payload.arguments) @($payload.pm2.arguments) -SyncWindow 0)) {
+        throw 'PM2 L3 模板的 typed arguments 与通用 arguments 不一致'
+    }
+}
+
 Invoke-TestCase -Name 'L3 发布材料哈希与 ZIP 载荷通过' -Body {
     $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("CompanyOps-Onboarding-" + [guid]::NewGuid().ToString('N'))
     try {

@@ -77,7 +77,7 @@ public sealed class ProjectReleaseRehearsalTests
             report["artifacts"] = candidate["artifacts"]!.DeepClone();
 
             var components = project["components"]!.AsArray().OfType<JsonObject>().ToArray();
-            Assert.All(components, c => Assert.Contains(c["kind"]!.GetValue<string>(), new[] { "windowsService", "interactiveApp" }));
+            Assert.All(components, c => Assert.Contains(c["kind"]!.GetValue<string>(), new[] { "windowsService", "interactiveApp", "pm2Legacy" }));
             var binding = new JsonObject
             {
                 ["manifestKind"] = "EnvironmentBinding",
@@ -86,7 +86,9 @@ public sealed class ProjectReleaseRehearsalTests
                 ["componentBindings"] = new JsonArray(components.Select(c => (JsonNode)new JsonObject
                 {
                     ["componentId"] = c["id"]!.GetValue<string>(),
-                    ["nativeName"] = "Rehearsal." + c["id"]!.GetValue<string>()
+                    ["nativeName"] = c["kind"]!.GetValue<string>() == "pm2Legacy"
+                        ? c["pm2"]!["name"]!.GetValue<string>()
+                        : "Rehearsal." + c["id"]!.GetValue<string>()
                 }).ToArray()),
                 ["portBindings"] = new JsonArray((project["ports"]?.AsArray().OfType<JsonObject>() ?? []).Select((p, i) => (JsonNode)new JsonObject
                 {
@@ -94,6 +96,16 @@ public sealed class ProjectReleaseRehearsalTests
                     ["protocol"] = p["protocol"]!.GetValue<string>(), ["address"] = "127.0.0.1", ["port"] = 41000 + i
                 }).ToArray())
             };
+            if (components.Any(c => c["kind"]?.GetValue<string>() == "pm2Legacy"))
+            {
+                binding["legacyPm2"] = new JsonObject
+                {
+                    ["ownerSid"] = "S-1-5-21-1000",
+                    ["snapshotFileName"] = "CompanyOps.Pm2Bridge.S-1-5-21-1000.discovery.json",
+                    ["controlPipeName"] = "CompanyOps.Pm2Bridge.S-1-5-21-1000.v1",
+                    ["maxAgeSeconds"] = 30
+                };
+            }
             var bindingPath = Path.Combine(manifestRoot, "binding.json");
             await File.WriteAllTextAsync(bindingPath, binding.ToJsonString(), TestContext.Current.CancellationToken);
             var options = Options.Create(new OpsOptions
@@ -221,14 +233,16 @@ public sealed class ProjectReleaseRehearsalTests
         await File.WriteAllTextAsync(projectPath, """
             {"manifestKind":"ProjectManifest","metadata":{"id":"sample"},
              "components":[{"id":"api","kind":"windowsService","entrypoint":"api-main","dependsOn":[],"health":[]},
-                           {"id":"host","kind":"interactiveApp","entrypoint":"host-main","dependsOn":["api"],"health":[]}],
+                           {"id":"host","kind":"interactiveApp","entrypoint":"host-main","dependsOn":["api"],"health":[]},
+                           {"id":"gateway","kind":"pm2Legacy","entrypoint":"gateway-main","dependsOn":["api"],"health":[],
+                            "pm2":{"name":"sample-gateway","cwd":"gateway","script":"gateway/app.js","arguments":["--port","${PORT_API_HTTP}"]}}],
              "ports":[{"id":"api-http","componentId":"api","protocol":"tcp"}],
              "update":{"strategy":"stopStart","rollbackOnFailure":true,"healthTimeoutSeconds":5}}
             """);
         var zipPath = Path.Combine(root, "package.zip");
         using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
         {
-            foreach (var name in new[] { "api/app.exe", "host/app.exe" })
+            foreach (var name in new[] { "api/app.exe", "host/app.exe", "gateway/app.js" })
             {
                 using var writer = new StreamWriter(zip.CreateEntry(name).Open());
                 writer.Write("inert fixture, never executed");
@@ -242,7 +256,10 @@ public sealed class ProjectReleaseRehearsalTests
              "projectManifestSha256":"{{HashFile(projectPath)}}",
              "artifacts":[{"id":"package","fileName":"package.zip","mediaType":"application/zip","sha256":"{{HashFile(zipPath)}}","sizeBytes":{{new FileInfo(zipPath).Length}}}],
              "componentPayloads":[{"componentId":"api","entrypoint":"api-main","artifactId":"package","path":"api/app.exe"},
-                                  {"componentId":"host","entrypoint":"host-main","artifactId":"package","path":"host/app.exe"}]}
+                                  {"componentId":"host","entrypoint":"host-main","artifactId":"package","path":"host/app.exe"},
+                                  {"componentId":"gateway","entrypoint":"gateway-main","artifactId":"package","path":"gateway/app.js",
+                                   "workingDirectory":"gateway","arguments":["--port","${PORT_API_HTTP}"],
+                                   "pm2":{"name":"sample-gateway","cwd":"gateway","script":"gateway/app.js","arguments":["--port","${PORT_API_HTTP}"]} }]}
             """);
         return new JsonObject { ["projectManifestPath"] = projectPath, ["releaseManifestPath"] = releasePath, ["outputDirectory"] = Path.Combine(root, "rehearsal") };
     }
@@ -273,19 +290,22 @@ public sealed class ProjectReleaseRehearsalTests
         public string Kind => kind;
         public Task<DeploymentEntrypointCaptureResult> CaptureAsync(DeploymentEntrypointTarget target, CancellationToken cancellationToken) =>
             Task.FromResult(new DeploymentEntrypointCaptureResult(true, new DeploymentEntrypointSnapshot(target.ComponentId, target.Kind, target.NativeName,
-                host.Entrypoints.GetValueOrDefault(target.ComponentId, "inert-original.exe"), host.Running.GetValueOrDefault(target.ComponentId))));
+                host.Entrypoints.GetValueOrDefault(target.ComponentId, "inert-original.exe"), host.Running.GetValueOrDefault(target.ComponentId),
+                PmId: kind == "pm2Legacy" && host.Entrypoints.ContainsKey(target.ComponentId) ? 100 : null,
+                ControlPipeName: target.ControlPipeName)));
         public Task<AdapterExecutionResult> ApplyAsync(DeploymentEntrypointTarget target, DeploymentEntrypointSnapshot snapshot, CancellationToken cancellationToken)
         {
             Assert.True(File.Exists(target.ExecutablePath), "真实发布载荷入口必须存在");
             host.Entrypoints[target.ComponentId] = target.BinaryPath;
+            if (kind == "pm2Legacy") host.Running[target.ComponentId] = true;
             host.Events.Add("apply:" + target.ComponentId);
-            return Task.FromResult(new AdapterExecutionResult(true, "simulated entrypoint"));
+            return Task.FromResult(new AdapterExecutionResult(true, "simulated entrypoint", kind == "pm2Legacy" ? 101 : null));
         }
         public Task<AdapterExecutionResult> RestoreAsync(DeploymentEntrypointSnapshot snapshot, CancellationToken cancellationToken)
         {
             host.Entrypoints[snapshot.ComponentId] = snapshot.BinaryPath;
             host.Events.Add("restore:" + snapshot.ComponentId);
-            return Task.FromResult(new AdapterExecutionResult(true, "simulated restore"));
+            return Task.FromResult(new AdapterExecutionResult(true, "simulated restore", kind == "pm2Legacy" && snapshot.PmId is not null ? 102 : null));
         }
     }
 

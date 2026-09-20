@@ -1,0 +1,33 @@
+{
+  "apiVersion": "ops.company/v1",
+  "recipeKind": "ReleaseRecipe",
+  "artifact": {
+    "id": "application-package",
+    "fileName": "${PROJECT_ID}-${VERSION}-win-x64.zip"
+  },
+  "target": {
+    "architecture": "x64",
+    "minAgentVersion": "0.1.0"
+  },
+  "componentPayloads": [
+    {
+      "componentId": "backend",
+      "entrypoint": "backend-main",
+      "path": "backend/server.exe",
+      "workingDirectory": "backend",
+      "arguments": [
+        "--port",
+        "${PORT_BACKEND_HTTP}"
+      ],
+      "pm2": {
+        "name": "change-me-backend",
+        "cwd": "backend",
+        "script": "backend/server.exe",
+        "arguments": [
+          "--port",
+          "${PORT_BACKEND_HTTP}"
+        ]
+      }
+    }
+  ]
+}

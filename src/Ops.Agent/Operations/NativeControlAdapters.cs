@@ -319,6 +319,24 @@ public sealed class Pm2LegacyControlAdapter(
             return new AdapterExecutionResult(false, "缺少已精确归属的 pm_id");
         }
 
+        if (target.ExpectedCwd is { } targetCwd &&
+            target.ExpectedScript is { } targetScript &&
+            target.ControlPipeName is { } targetPipe)
+        {
+            return await ownerBridge.ExecuteAsync(
+                targetPipe,
+                new Pm2BridgeControlRequest(
+                    Pm2BridgeProtocol.Version,
+                    Guid.CreateVersion7().ToString(),
+                    target.PmId.Value,
+                    target.NativeId,
+                    targetCwd,
+                    targetScript,
+                    action,
+                    target.ExpectedArguments),
+                cancellationToken);
+        }
+
         var claims = await claimProvider.GetClaimsAsync(cancellationToken);
         var matches = claims.Where(claim =>
             claim.ProjectId == target.ProjectId &&

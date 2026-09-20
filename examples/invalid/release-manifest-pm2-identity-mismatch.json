@@ -1,0 +1,17 @@
+{
+  "$schema": "../../spec/v1/schemas/release-manifest.schema.json",
+  "apiVersion": "ops.company/v1",
+  "manifestKind": "ReleaseManifest",
+  "metadata": { "projectId": "sample-system", "version": "1.0.0", "releaseId": "sample-system-1.0.0-mismatch", "builtAt": "2026-09-20T00:00:00Z" },
+  "target": { "os": "windows", "architecture": "x64", "minAgentVersion": "0.1.0" },
+  "projectManifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifacts": [
+    { "id": "package", "fileName": "package.zip", "mediaType": "application/zip", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "sizeBytes": 1 }
+  ],
+  "componentPayloads": [
+    {
+      "componentId": "worker", "entrypoint": "worker-main", "artifactId": "package", "path": "worker/server.exe", "workingDirectory": "worker", "arguments": ["--mode", "safe"],
+      "pm2": { "name": "sample-worker", "cwd": "other", "script": "worker/other.exe", "arguments": ["--mode", "different"] }
+    }
+  ]
+}

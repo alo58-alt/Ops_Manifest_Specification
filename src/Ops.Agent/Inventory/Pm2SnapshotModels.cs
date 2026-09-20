@@ -15,7 +15,8 @@ public sealed record Pm2ProcessSnapshot(
     string Script,
     string Status,
     int Pid,
-    int RestartCount);
+    int RestartCount,
+    IReadOnlyList<string>? Arguments = null);
 
 public sealed record LegacyPm2Claim(
     string ProjectId,

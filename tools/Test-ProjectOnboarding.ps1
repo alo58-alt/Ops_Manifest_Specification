@@ -298,6 +298,29 @@ if ($Level -eq 'L3') {
                     if ($componentsById[[string]$payload.componentId].entrypoint -ne $payload.entrypoint) {
                         Add-Failure "组件 $($payload.componentId) 的 entrypoint 与 ProjectManifest 不一致"
                     }
+                    $component = $componentsById[[string]$payload.componentId]
+                    $hasPm2Payload = $payload.PSObject.Properties.Name -contains 'pm2'
+                    if ($component.kind -eq 'pm2Legacy') {
+                        if (-not $hasPm2Payload) {
+                            Add-Failure "PM2 组件 $($payload.componentId) 缺少 typed pm2 发布载荷"
+                        } else {
+                            if ([string]$payload.pm2.name -cne [string]$component.pm2.name) {
+                                Add-Failure "PM2 组件 $($payload.componentId) 的 name 与 ProjectManifest 不一致"
+                            }
+                            if ([string]$payload.pm2.script -cne [string]$payload.path -or
+                                [string]$payload.pm2.cwd -cne [string]$payload.workingDirectory) {
+                                Add-Failure "PM2 组件 $($payload.componentId) 的 script/cwd 与通用发布入口不一致"
+                            }
+                            $typedArguments = @($payload.pm2.arguments | ForEach-Object { [string]$_ })
+                            $genericArguments = @($payload.arguments | ForEach-Object { [string]$_ })
+                            if ($typedArguments.Count -ne $genericArguments.Count -or
+                                (Compare-Object -ReferenceObject $typedArguments -DifferenceObject $genericArguments -SyncWindow 0)) {
+                                Add-Failure "PM2 组件 $($payload.componentId) 的 typed arguments 与通用 arguments 不一致"
+                            }
+                        }
+                    } elseif ($hasPm2Payload) {
+                        Add-Failure "非 PM2 组件 $($payload.componentId) 不得包含 pm2 发布载荷"
+                    }
                     if ($artifactsById.ContainsKey([string]$payload.artifactId)) {
                         $artifactPath = Join-Path $ArtifactDirectory ([string]$artifactsById[[string]$payload.artifactId].fileName)
                         if (Test-Path -LiteralPath $artifactPath -PathType Leaf) {

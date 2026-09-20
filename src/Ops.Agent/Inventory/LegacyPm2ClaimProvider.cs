@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CompanyOps.Agent.Catalog;
 using CompanyOps.Contracts;
@@ -119,6 +120,16 @@ public sealed class LegacyPm2ClaimProvider(
             return Unbound("PM2 cwd/script 无法安全解析到安装根目录内");
         }
 
+        if (!TryResolveCurrentReleaseIdentity(installRoot, componentId, processName, out var releaseCwd, out var releaseScript, out var releaseError))
+        {
+            return Unbound(releaseError!);
+        }
+        if (releaseCwd is not null && releaseScript is not null)
+        {
+            expectedCwd = releaseCwd;
+            expectedScript = releaseScript;
+        }
+
         return new LegacyPm2Claim(
             projectId,
             environment,
@@ -151,7 +162,7 @@ public sealed class LegacyPm2ClaimProvider(
                 null,
                 30,
                 error);
-    }
+        }
 
     private static bool TryResolveProjectPath(
         string root,
@@ -175,6 +186,73 @@ public sealed class LegacyPm2ClaimProvider(
 
         resolvedPath = candidate;
         return true;
+    }
+
+    private static bool TryResolveCurrentReleaseIdentity(
+        string installRoot,
+        string componentId,
+        string processName,
+        out string? cwd,
+        out string? script,
+        out string? error)
+    {
+        cwd = null;
+        script = null;
+        error = null;
+        var pointerPath = Path.Combine(installRoot, "current.release.json");
+        if (!File.Exists(pointerPath))
+        {
+            return true;
+        }
+
+        try
+        {
+            var pointer = JsonNode.Parse(File.ReadAllText(pointerPath)) as JsonObject;
+            var currentPath = pointer?["currentPath"]?.GetValue<string>();
+            var releasesRoot = Path.GetFullPath(Path.Combine(installRoot, "releases"));
+            if (string.IsNullOrWhiteSpace(currentPath) || !IsUnderRoot(currentPath, releasesRoot))
+            {
+                error = "current.release.json 的 PM2 release 路径不可信";
+                return false;
+            }
+
+            var manifestPath = Path.Combine(currentPath, ".companyops", "release-manifest.json");
+            var release = JsonNode.Parse(File.ReadAllText(manifestPath)) as JsonObject;
+            var payloads = release?["componentPayloads"]?.AsArray().OfType<JsonObject>()
+                .Where(item => item["componentId"]?.GetValue<string>() == componentId).ToArray() ?? [];
+            if (payloads.Length != 1 || payloads[0]["pm2"] is not JsonObject pm2 ||
+                pm2["name"]?.GetValue<string>() != processName)
+            {
+                error = "当前 release 缺少唯一且同名的 PM2 发布身份";
+                return false;
+            }
+
+            var artifactId = payloads[0]["artifactId"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(artifactId))
+            {
+                error = "当前 release 的 PM2 artifactId 无效";
+                return false;
+            }
+            var artifactRoot = Path.Combine(currentPath, artifactId);
+            if (!TryResolveProjectPath(artifactRoot, pm2["cwd"]?.GetValue<string>(), out cwd) ||
+                !TryResolveProjectPath(artifactRoot, pm2["script"]?.GetValue<string>(), out script))
+            {
+                error = "当前 release 的 PM2 cwd/script 路径越界";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or InvalidOperationException)
+        {
+            error = $"当前 PM2 release 身份读取失败：{exception.Message}";
+            return false;
+        }
+    }
+
+    private static bool IsUnderRoot(string path, string root)
+    {
+        var resolvedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
+        return Path.GetFullPath(path).StartsWith(resolvedRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? GetString(JsonObject root, string objectName, string propertyName) =>

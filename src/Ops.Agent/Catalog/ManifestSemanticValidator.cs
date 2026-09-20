@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace CompanyOps.Agent.Catalog;
 
@@ -80,6 +81,12 @@ public static class ManifestSemanticValidator
             }
 
             dependencies[componentId] = componentDependencies;
+
+            if (string.Equals(GetString(component, "kind"), "pm2Legacy", StringComparison.Ordinal) &&
+                component["pm2"] is JsonObject declaredPm2)
+            {
+                ValidatePm2Script(componentId, GetString(declaredPm2, "script"), errors);
+            }
         }
 
         if (HasDependencyCycle(componentIds, dependencies))
@@ -133,6 +140,66 @@ public static class ManifestSemanticValidator
                 errors.Add(
                     $"组件 {GetString(payload, "componentId")} 的入口 {GetString(payload, "entrypoint")} " +
                     $"引用了不存在的制品 {artifactId}");
+            }
+
+            if (payload["pm2"] is JsonObject pm2)
+            {
+                var componentId = GetString(payload, "componentId") ?? "<unknown>";
+                var script = GetString(pm2, "script");
+                ValidatePm2Script(componentId, script, errors);
+                if (!string.Equals(script, GetString(payload, "path"), StringComparison.Ordinal))
+                {
+                    errors.Add($"PM2 组件 {componentId} 的 pm2.script 必须与 path 完全一致");
+                }
+
+                if (!string.Equals(GetString(pm2, "cwd"), GetString(payload, "workingDirectory"), StringComparison.Ordinal))
+                {
+                    errors.Add($"PM2 组件 {componentId} 的 pm2.cwd 必须与 workingDirectory 完全一致");
+                }
+
+                var typedArguments = pm2["arguments"]?.AsArray() ?? [];
+                var genericArguments = payload["arguments"]?.AsArray() ?? [];
+                if (!typedArguments.Select(static value => value?.GetValue<string>()).SequenceEqual(
+                        genericArguments.Select(static value => value?.GetValue<string>()),
+                        StringComparer.Ordinal))
+                {
+                    errors.Add($"PM2 组件 {componentId} 的 pm2.arguments 必须与 arguments 完全逐项一致");
+                }
+
+                ValidatePm2Arguments(componentId, typedArguments, errors);
+            }
+        }
+    }
+
+    private static void ValidatePm2Script(string componentId, string? script, List<string> errors)
+    {
+        if (string.IsNullOrWhiteSpace(script)) return;
+        var fileName = Path.GetFileName(script.Replace('/', Path.DirectorySeparatorChar));
+        if (Regex.IsMatch(
+                fileName,
+                @"^(?:(?:cmd|powershell|pwsh|bash|sh|wscript|cscript)(?:\.exe)?|.+\.(?:cmd|bat|ps1|psm1|vbs|wsf))$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            errors.Add($"PM2 组件 {componentId} 不得以命令宿主或脚本文件作为入口");
+        }
+    }
+
+    private static void ValidatePm2Arguments(string componentId, JsonArray arguments, List<string> errors)
+    {
+        foreach (var node in arguments)
+        {
+            var argument = node?.GetValue<string>() ?? string.Empty;
+            if (Regex.IsMatch(argument, @"^(?:&&|\|\||[&|;<>]|>>|2>|2>>)$", RegexOptions.CultureInvariant))
+            {
+                errors.Add($"PM2 组件 {componentId} 的参数不得包含独立 shell 控制符");
+            }
+
+            if (Regex.IsMatch(
+                    argument,
+                    @"^(?:--?|/)?(?:password|passwd|pwd|token|secret|api[-_]?key)(?:=|:).+",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                errors.Add($"PM2 组件 {componentId} 的参数疑似包含 Secret 明文；必须使用主机 Secret 引用或配置绑定");
             }
         }
     }

@@ -233,7 +233,7 @@ public sealed class DeploymentEngine(
             }
 
             await WriteReleasePointerAsync(context, validation.Version, cancellationToken);
-            await WriteInstalledStateAsync(request, context, validation.Version, cancellationToken);
+            await WriteInstalledStateAsync(request, context, validation.Version, activation.NativeIds, cancellationToken);
             await portRegistry.CommitOperationAsync(request.OperationId, cancellationToken);
             steps.Add("release pointer、InstalledState 与端口登记已提交");
             var result = Success(request, context.CurrentVersion, validation.Version, steps);
@@ -427,6 +427,7 @@ public sealed class DeploymentEngine(
                 request with { ReleaseManifestPath = previousManifestPath },
                 context,
                 previousVersion,
+                activation.NativeIds,
                 cancellationToken);
             var result = Success(
                 request,
@@ -618,6 +619,7 @@ public sealed class DeploymentEngine(
         DeploymentRequest request,
         DeploymentContext context,
         string version,
+        IReadOnlyDictionary<string, string>? activatedNativeIds,
         CancellationToken cancellationToken)
     {
         var runtimeProject = snapshotCache.Read().Projects?.Projects.SingleOrDefault(item =>
@@ -643,7 +645,8 @@ public sealed class DeploymentEngine(
                 ["kind"] = kind,
                 ["adapter"] = adapter,
                 ["nativeId"] = kind == "pm2Legacy"
-                    ? runtimeProject?.Components.SingleOrDefault(item => item.ComponentId == id)?.InstalledNativeId
+                    ? activatedNativeIds?.GetValueOrDefault(id)
+                      ?? runtimeProject?.Components.SingleOrDefault(item => item.ComponentId == id)?.InstalledNativeId
                       ?? $"unbound:{bindings[id]["nativeName"]!.GetValue<string>()}"
                     : bindings[id]["nativeName"]!.GetValue<string>(),
                 ["runtimeState"] = "unknown",

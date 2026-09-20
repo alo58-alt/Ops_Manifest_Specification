@@ -98,8 +98,10 @@ if ([string]::IsNullOrWhiteSpace($artifactFileName) -or
 
 $manifestComponentIds = @($projectManifest.components | ForEach-Object { [string]$_.id })
 $manifestEntrypoints = @{}
+$manifestComponents = @{}
 foreach ($component in @($projectManifest.components)) {
     $manifestEntrypoints[[string]$component.id] = [string]$component.entrypoint
+    $manifestComponents[[string]$component.id] = $component
 }
 $seenComponents = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 $componentPayloads = @()
@@ -136,6 +138,38 @@ foreach ($payload in @($recipe.componentPayloads)) {
     }
     if (-not [string]::IsNullOrWhiteSpace($workingDirectoryValue)) {
         $componentPayload['workingDirectory'] = $workingDirectoryValue
+    }
+    $manifestComponent = $manifestComponents[$componentId]
+    $hasPm2Payload = $payload.PSObject.Properties.Name -contains 'pm2'
+    $manifestKind = if ($manifestComponent.PSObject.Properties.Name -contains 'kind') {
+        [string]$manifestComponent.kind
+    } else {
+        ''
+    }
+    if ($manifestKind -eq 'pm2Legacy') {
+        if (-not $hasPm2Payload) {
+            throw "PM2 组件 $componentId 的发布配方必须包含 typed pm2 载荷"
+        }
+        if ([string]$payload.pm2.name -cne [string]$manifestComponent.pm2.name) {
+            throw "PM2 组件 $componentId 的 name 与 ProjectManifest 不一致"
+        }
+        if ([string]$payload.pm2.script -cne [string]$payload.path -or
+            [string]$payload.pm2.cwd -cne $workingDirectoryValue) {
+            throw "PM2 组件 $componentId 的 script/cwd 必须分别与 path/workingDirectory 完全一致"
+        }
+        $pm2Arguments = @($payload.pm2.arguments | ForEach-Object { [string]$_ })
+        if ($pm2Arguments.Count -ne $argumentValues.Count -or
+            (Compare-Object -ReferenceObject $pm2Arguments -DifferenceObject $argumentValues -SyncWindow 0)) {
+            throw "PM2 组件 $componentId 的 typed arguments 必须与 arguments 完全逐项一致"
+        }
+        $componentPayload['pm2'] = [ordered]@{
+            name = [string]$payload.pm2.name
+            cwd = [string]$payload.pm2.cwd
+            script = [string]$payload.pm2.script
+            arguments = $pm2Arguments
+        }
+    } elseif ($hasPm2Payload) {
+        throw "非 PM2 组件 $componentId 不得包含 pm2 载荷"
     }
     $componentPayloads += $componentPayload
 }

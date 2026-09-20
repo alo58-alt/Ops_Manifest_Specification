@@ -85,6 +85,36 @@ function Add-PortConflictErrors {
     }
 }
 
+function Test-SafePm2Script {
+    param(
+        [string]$ComponentId,
+        [string]$Script,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+
+    $fileName = [System.IO.Path]::GetFileName($Script.Replace('/', '\'))
+    if ($fileName -match '^(?i:(?:(?:cmd|powershell|pwsh|bash|sh|wscript|cscript)(?:\.exe)?|.+\.(?:cmd|bat|ps1|psm1|vbs|wsf)))$') {
+        $Errors.Add("PM2 组件 $ComponentId 不得以命令宿主或脚本文件作为入口")
+    }
+}
+
+function Test-SafePm2Arguments {
+    param(
+        [string]$ComponentId,
+        [string[]]$Arguments,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+
+    foreach ($argument in $Arguments) {
+        if ($argument -match '^(?:&&|\|\||[&|;<>]|>>|2>|2>>)$') {
+            $Errors.Add("PM2 组件 $ComponentId 的参数不得包含独立 shell 控制符")
+        }
+        if ($argument -match '^(?i:(?:--?|/)?(?:password|passwd|pwd|token|secret|api[-_]?key)(?:=|:).+)$') {
+            $Errors.Add("PM2 组件 $ComponentId 的参数疑似包含 Secret 明文；必须使用主机 Secret 引用或配置绑定")
+        }
+    }
+}
+
 function Test-ProjectManifestSemantics {
     param(
         [object]$Document,
@@ -173,6 +203,7 @@ function Test-ProjectManifestSemantics {
             if (-not $script.StartsWith("$cwd/", [System.StringComparison]::OrdinalIgnoreCase)) {
                 $Errors.Add("PM2 组件 $($component.id) 的 script 必须位于其 cwd 内")
             }
+            Test-SafePm2Script -ComponentId ([string]$component.id) -Script ([string]$component.pm2.script) -Errors $Errors
         }
     }
 
@@ -247,6 +278,24 @@ function Test-ReleaseManifestSemantics {
             $Errors.Add(
                 "组件 $($payload.componentId) 的入口 $($payload.entrypoint) 引用了不存在的制品 $($payload.artifactId)"
             )
+        }
+
+        if (Test-HasProperty -InputObject $payload -Name 'pm2') {
+            $componentId = [string]$payload.componentId
+            Test-SafePm2Script -ComponentId $componentId -Script ([string]$payload.pm2.script) -Errors $Errors
+            if ([string]$payload.pm2.script -cne [string]$payload.path) {
+                $Errors.Add("PM2 组件 $componentId 的 pm2.script 必须与 path 完全一致")
+            }
+            if ([string]$payload.pm2.cwd -cne [string]$payload.workingDirectory) {
+                $Errors.Add("PM2 组件 $componentId 的 pm2.cwd 必须与 workingDirectory 完全一致")
+            }
+            $typedArguments = @($payload.pm2.arguments | ForEach-Object { [string]$_ })
+            $genericArguments = @($payload.arguments | ForEach-Object { [string]$_ })
+            if ($typedArguments.Count -ne $genericArguments.Count -or
+                (Compare-Object -ReferenceObject $typedArguments -DifferenceObject $genericArguments -SyncWindow 0)) {
+                $Errors.Add("PM2 组件 $componentId 的 pm2.arguments 必须与 arguments 完全逐项一致")
+            }
+            Test-SafePm2Arguments -ComponentId $componentId -Arguments $typedArguments -Errors $Errors
         }
     }
 }

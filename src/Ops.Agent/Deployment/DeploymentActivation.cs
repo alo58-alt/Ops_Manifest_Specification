@@ -22,7 +22,8 @@ public sealed record DeploymentActivationResult(
     bool Success,
     string? Detail = null,
     IReadOnlyList<string>? Steps = null,
-    IDeploymentActivationRollback? Rollback = null);
+    IDeploymentActivationRollback? Rollback = null,
+    IReadOnlyDictionary<string, string>? NativeIds = null);
 
 public interface IDeploymentActivationRollback
 {
@@ -49,7 +50,16 @@ public sealed record DeploymentEntrypointTarget(
     string ExecutablePath,
     string BinaryPath,
     string? WorkingDirectory,
-    IReadOnlyList<string> Arguments);
+    IReadOnlyList<string> Arguments,
+    string? SnapshotFileName = null,
+    string? ControlPipeName = null,
+    string? OwnerSid = null,
+    int SnapshotMaxAgeSeconds = 30,
+    string? InstallRoot = null,
+    IReadOnlyDictionary<string, string>? ArgumentValues = null,
+    string? LegacyCwd = null,
+    string? LegacyScript = null,
+    IReadOnlyList<string>? LegacyArguments = null);
 
 public sealed record DeploymentEntrypointSnapshot(
     string ComponentId,
@@ -66,7 +76,9 @@ public sealed record DeploymentEntrypointSnapshot(
     string? HostingAdapter = null,
     string? HostApplication = null,
     string? HostWorkingDirectory = null,
-    string? HostArguments = null);
+    string? HostArguments = null,
+    int? PmId = null,
+    string? ControlPipeName = null);
 
 public sealed record DeploymentEntrypointCaptureResult(
     bool Success,
@@ -168,6 +180,7 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
 
         var steps = new List<string>();
         var captures = new Dictionary<string, DeploymentEntrypointSnapshot>(StringComparer.Ordinal);
+        var controlTargets = new Dictionary<string, ComponentControlTarget>(StringComparer.Ordinal);
         foreach (var item in plan.Items)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -181,6 +194,7 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             }
 
             captures.Add(item.ComponentId, capture.Snapshot);
+            controlTargets.Add(item.ComponentId, ControlTargetForSnapshot(item, capture.Snapshot));
             steps.Add($"组件 {item.ComponentId} 已读取当前原生入口和运行状态");
         }
 
@@ -189,14 +203,20 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             captures,
             request.ProjectManifest,
             request.Binding,
-            _healthGate);
+            _healthGate,
+            controlTargets);
 
         try
         {
             foreach (var item in plan.Items.Reverse())
             {
+                if (item.Kind == "pm2Legacy" && controlTargets[item.ComponentId].PmId is null)
+                {
+                    steps.Add($"停止 {item.ComponentId}：首次登记，无旧 PM2 实例");
+                    continue;
+                }
                 var stopped = await item.ControlAdapter.ExecuteAsync(
-                    item.ControlTarget,
+                    controlTargets[item.ComponentId],
                     ComponentOperationAction.Stop,
                     cancellationToken);
                 steps.Add($"停止 {item.ComponentId}：{stopped.Detail}");
@@ -209,6 +229,11 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
 
             foreach (var item in plan.Items)
             {
+                if (item.Kind == "pm2Legacy")
+                {
+                    steps.Add($"切换 {item.ComponentId} 原生入口：将在依赖拓扑启动阶段精确登记");
+                    continue;
+                }
                 var applied = await item.EntrypointAdapter.ApplyAsync(
                     item.Target,
                     captures[item.ComponentId],
@@ -227,10 +252,29 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 600));
             foreach (var item in plan.Items)
             {
-                var started = await item.ControlAdapter.ExecuteAsync(
-                    item.ControlTarget,
-                    ComponentOperationAction.Start,
-                    cancellationToken);
+                AdapterExecutionResult started;
+                if (item.Kind == "pm2Legacy")
+                {
+                    started = await item.EntrypointAdapter.ApplyAsync(
+                        item.Target,
+                        captures[item.ComponentId],
+                        cancellationToken);
+                    if (started.Success && started.PmId is >= 0)
+                    {
+                        controlTargets[item.ComponentId] = item.ControlTarget with { PmId = started.PmId };
+                    }
+                    else if (started.Success)
+                    {
+                        started = new AdapterExecutionResult(false, "PM2 登记未返回精确 pm_id");
+                    }
+                }
+                else
+                {
+                    started = await item.ControlAdapter.ExecuteAsync(
+                        controlTargets[item.ComponentId],
+                        ComponentOperationAction.Start,
+                        cancellationToken);
+                }
                 steps.Add($"启动 {item.ComponentId}：{started.Detail}");
                 if (!started.Success)
                 {
@@ -256,7 +300,10 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 true,
                 "原生入口切换、依赖启动和健康复核全部通过",
                 steps,
-                rollback);
+                rollback,
+                controlTargets
+                    .Where(static pair => pair.Value.PmId is not null)
+                    .ToDictionary(static pair => pair.Key, static pair => $"pm_id:{pair.Value.PmId}", StringComparer.Ordinal));
         }
         catch (OperationCanceledException)
         {
@@ -277,6 +324,20 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 steps);
         }
     }
+
+    private static ComponentControlTarget ControlTargetForSnapshot(
+        ActivationItem item,
+        DeploymentEntrypointSnapshot snapshot) =>
+        item.Kind == "pm2Legacy"
+            ? item.ControlTarget with
+            {
+                PmId = snapshot.PmId,
+                ExpectedCwd = snapshot.WorkingDirectory,
+                ExpectedScript = snapshot.ExecutablePath,
+                ExpectedArguments = snapshot.Arguments,
+                ControlPipeName = snapshot.ControlPipeName
+            }
+            : item.ControlTarget;
 
     private static async Task<DeploymentActivationResult> RestoreAfterUnhandledFailureAsync(
         IDeploymentActivationRollback rollback,
@@ -413,8 +474,51 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 arguments.Add(resolved);
             }
 
+            if (kind == "pm2Legacy")
+            {
+                var pm2 = payload["pm2"] as JsonObject;
+                var declaredPm2 = component["pm2"] as JsonObject;
+                if (pm2 is null || declaredPm2 is null ||
+                    !string.Equals(pm2["name"]?.GetValue<string>(), declaredPm2["name"]?.GetValue<string>(), StringComparison.Ordinal) ||
+                    !string.Equals(pm2["script"]?.GetValue<string>(), payload["path"]?.GetValue<string>(), StringComparison.Ordinal) ||
+                    !string.Equals(pm2["cwd"]?.GetValue<string>(), payload["workingDirectory"]?.GetValue<string>(), StringComparison.Ordinal) ||
+                    !JsonArrayValuesEqual(pm2["arguments"] as JsonArray, payload["arguments"] as JsonArray))
+                {
+                    return ActivationPlan.Fail("pm2_payload_identity_invalid", $"组件 {componentId} 的 PM2 发布身份与声明或通用载荷不一致");
+                }
+            }
+
             var nativeName = binding["nativeName"]?.GetValue<string>() ?? string.Empty;
+            if (kind == "pm2Legacy" &&
+                !string.Equals(nativeName, component["pm2"]?["name"]?.GetValue<string>(), StringComparison.Ordinal))
+            {
+                return ActivationPlan.Fail("pm2_binding_identity_invalid", $"组件 {componentId} 的 PM2 nativeName 与项目声明不一致");
+            }
             var binaryPath = WindowsCommandLine.Build(executablePath, arguments);
+            var legacyPm2 = request.Binding["legacyPm2"] as JsonObject;
+            var declaredLegacyCwd = kind == "pm2Legacy"
+                ? ResolveUnderRoot(installRoot, component["pm2"]?["cwd"]?.GetValue<string>())
+                : null;
+            var declaredLegacyScript = kind == "pm2Legacy"
+                ? ResolveUnderRoot(installRoot, component["pm2"]?["script"]?.GetValue<string>())
+                : null;
+            var declaredLegacyArguments = new List<string>();
+            if (kind == "pm2Legacy")
+            {
+                foreach (var node in component["pm2"]?["arguments"]?.AsArray() ?? [])
+                {
+                    var resolved = ResolveArgument(node!.GetValue<string>(), argumentValues);
+                    if (resolved is null)
+                    {
+                        return ActivationPlan.Fail("argument_placeholder_unresolved", $"组件 {componentId} 的旧 PM2 参数包含未知占位符");
+                    }
+                    declaredLegacyArguments.Add(resolved);
+                }
+                if (declaredLegacyCwd is null || declaredLegacyScript is null)
+                {
+                    return ActivationPlan.Fail("pm2_legacy_identity_invalid", $"组件 {componentId} 的旧 PM2 声明路径不安全");
+                }
+            }
             var target = new DeploymentEntrypointTarget(
                 request.ProjectId,
                 request.Environment,
@@ -424,7 +528,16 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                 executablePath,
                 binaryPath,
                 workingDirectory,
-                arguments);
+                arguments,
+                kind == "pm2Legacy" ? legacyPm2?["snapshotFileName"]?.GetValue<string>() : null,
+                kind == "pm2Legacy" ? legacyPm2?["controlPipeName"]?.GetValue<string>() : null,
+                kind == "pm2Legacy" ? legacyPm2?["ownerSid"]?.GetValue<string>() : null,
+                kind == "pm2Legacy" ? legacyPm2?["maxAgeSeconds"]?.GetValue<int>() ?? 30 : 30,
+                installRoot,
+                argumentValues,
+                declaredLegacyCwd,
+                declaredLegacyScript,
+                declaredLegacyArguments);
             items.Add(new ActivationItem(
                 componentId,
                 kind,
@@ -438,10 +551,21 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                     kind,
                     nativeName,
                     installRoot,
-                    null)));
+                    null,
+                    kind == "pm2Legacy" ? workingDirectory : null,
+                    kind == "pm2Legacy" ? executablePath : null,
+                    kind == "pm2Legacy" ? arguments : null,
+                    kind == "pm2Legacy" ? legacyPm2?["controlPipeName"]?.GetValue<string>() : null)));
         }
 
         return new ActivationPlan(items, null);
+    }
+
+    private static bool JsonArrayValuesEqual(JsonArray? left, JsonArray? right)
+    {
+        var leftValues = left?.Select(static node => node?.GetValue<string>() ?? string.Empty).ToArray() ?? [];
+        var rightValues = right?.Select(static node => node?.GetValue<string>() ?? string.Empty).ToArray() ?? [];
+        return leftValues.SequenceEqual(rightValues, StringComparer.Ordinal);
     }
 
     private async Task<HealthGateResult> WaitForHealthAsync(
@@ -625,7 +749,8 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
         IReadOnlyDictionary<string, DeploymentEntrypointSnapshot> captures,
         JsonObject projectManifest,
         JsonObject binding,
-        IManifestHealthGate healthGate) : IDeploymentActivationRollback
+        IManifestHealthGate healthGate,
+        IDictionary<string, ComponentControlTarget> controlTargets) : IDeploymentActivationRollback
     {
         private readonly object _sync = new();
         private Task<DeploymentActivationResult>? _restoreTask;
@@ -653,9 +778,13 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
             var success = true;
             foreach (var item in items.Reverse())
             {
+                if (item.Kind == "pm2Legacy" && controlTargets[item.ComponentId].PmId is null)
+                {
+                    continue;
+                }
                 var stopped = await ExecuteRestoreStepAsync(
                     () => item.ControlAdapter.ExecuteAsync(
-                        item.ControlTarget,
+                        controlTargets[item.ComponentId],
                         ComponentOperationAction.Stop,
                         cancellationToken));
                 success &= stopped.Success;
@@ -668,13 +797,24 @@ public sealed class NativeDeploymentActivator : IDeploymentActivator
                     () => item.EntrypointAdapter.RestoreAsync(captures[item.ComponentId], cancellationToken));
                 success &= restored.Success;
                 steps.Add($"恢复 {item.ComponentId} 旧入口：{restored.Detail}");
+                if (item.Kind == "pm2Legacy")
+                {
+                    controlTargets[item.ComponentId] = ControlTargetForSnapshot(item, captures[item.ComponentId]) with
+                    {
+                        PmId = restored.PmId
+                    };
+                    if (captures[item.ComponentId].PmId is not null && restored.PmId is null)
+                    {
+                        success = false;
+                    }
+                }
             }
 
             foreach (var item in items.Where(item => captures[item.ComponentId].WasRunning))
             {
                 var started = await ExecuteRestoreStepAsync(
                     () => item.ControlAdapter.ExecuteAsync(
-                        item.ControlTarget,
+                        controlTargets[item.ComponentId],
                         ComponentOperationAction.Start,
                         cancellationToken));
                 success &= started.Success;

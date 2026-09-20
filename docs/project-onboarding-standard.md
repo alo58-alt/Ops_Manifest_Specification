@@ -75,7 +75,7 @@ L3 默认使用开发机或 CI 生成的预编译包：构建完成后自动传�
 
 接入向导中的端口解析顺序为：操作者明确填写的新端口、当前主机既有 EnvironmentBinding 实际端口、ProjectManifest 的 `preferredPort`。界面默认只展示解析结果，不要求重复填写；“指定新端口”留空表示沿用，只有操作者输入新值才形成端口变更计划。
 
-`ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环；IIS、静态站点、计划任务和遗留 PM2 在没有对应现场验收前，不获得 L3 更新权限。
+`ReleaseManifest` 是每个版本的发布产物，不应作为长期静态文件手工维护。当前“已存在的 Windows Service（含 NSSM 承载）”与 `interactiveApp` 已完成同一声明式发布激活代码闭环。`pm2Legacy` 只有在 typed PM2 载荷、owner 新鲜快照、精确单项迁移和失败恢复全部通过时才可进入 L3；隔离自动化不能替代共享 PM2 daemon 的现场验收。IIS、静态站点和计划任务在没有对应现场验收前不获得 L3 更新权限。
 
 日常操作从 Console“项目与组件”中的更新入口进入，在“更新项目”中选择已由开发端发布、同时包含 `release-manifest.json` 与发布 ZIP 的目录。Console 自动区分首次 Install 和后续 Update。SSH 运维可调用本机 `companyops.exe deploy --data-file <请求 JSON>`，先 Plan，再携带当前 generation 与唯一幂等键执行 Update。哈希、大小、generation、归属、组件启停、健康检查与失败恢复均由 Agent 执行。仅明确启用 `gitBuildRelease` 的项目使用“检查更新 → 构建并更新”。
 
@@ -255,6 +255,8 @@ ProjectManifest 中 `pm2Legacy.cwd` 和 `pm2Legacy.script` 是项目内相对路
 一个项目有多种组件时，把所需模板中的组件、端口和数据目录合并进同一份 ProjectManifest；不要建立多份 ProjectManifest。必须替换所有 `change-me` 相关值、组件名称、端口和健康语义，不要只改显示名称。
 
 PM2 接入额外要求名称、规范化 cwd、精确 script 唯一匹配；只按 `pm_id` 控制，禁止 `stop all`、`delete all` 和 `kill`。项目开发者只负责在 ProjectManifest 声明这三个相对值，绝不提交 owner SID、Pipe、快照文件名或 `PM2_HOME`。运维只需在每个真实 PM2 owner 下运行一次 CompanyOps 的“配置PM2主机接管”，以后每个 PM2 项目都由接入页自动识别 owner 并生成主机绑定。
+
+PM2 的发布配方还须为每个 `pm2Legacy` 组件提供 `pm2={name,cwd,script,arguments[]}`，并同时保留完全一致的通用 `path/workingDirectory/arguments[]`。这是旧入口精确核验、新入口登记和回滚恢复的不可变依据，不得改成 `command`、`shell`、ecosystem 配置文本或拼接后的命令行。参数中需要的端口、数据、日志和配置使用 CompanyOps 支持的绑定占位符；Secret 只使用主机 Secret 引用，不能出现在配方、ReleaseManifest 或 argv 中。参考 `templates\project-onboarding\pm2-legacy\ops\release-recipe.json`。
 
 ## 7. ops/README.md 必须回答的问题
 

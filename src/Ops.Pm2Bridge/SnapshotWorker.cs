@@ -69,7 +69,8 @@ public sealed class SnapshotWorker(
                 process.Script,
                 process.Status,
                 process.Pid,
-                process.RestartCount
+                process.RestartCount,
+                process.Arguments
             })
         };
         Directory.CreateDirectory(options.Value.SnapshotDirectory);
