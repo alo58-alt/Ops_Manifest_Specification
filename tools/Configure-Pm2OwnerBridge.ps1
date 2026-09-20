@@ -76,14 +76,10 @@ $pm2Json = (& $nodeExecutable $pm2CliPath jlist 2>$null) -join [Environment]::Ne
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($pm2Json)) {
     throw '当前 Windows 用户无法读取自己的 PM2 daemon。请先确认该账号执行 pm2 list 正常。'
 }
-try {
-    $null = $pm2Json | ConvertFrom-Json -ErrorAction Stop
-}
-catch {
+$pm2Json | & $nodeExecutable -e "JSON.parse(require('fs').readFileSync(0, 'utf8'))" 2>$null
+$pm2Json = $null
+if ($LASTEXITCODE -ne 0) {
     throw 'PM2 jlist 没有返回有效 JSON，未修改 CompanyOps 配置。'
-}
-finally {
-    $pm2Json = $null
 }
 
 $agentSettings = Get-Content -Raw -LiteralPath $agentConfigPath |
